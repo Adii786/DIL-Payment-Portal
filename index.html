@@ -1,0 +1,893 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#141F38">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DIL Payments">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>DIL — Daily Payment & Collection Info Portal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root{
+    --navy:#141F38;
+    --navy-2:#1E2E52;
+    --slate:#2F4670;
+    --bg:#F3F5F9;
+    --card:#FFFFFF;
+    --line:#E1E5EE;
+    --text:#16202E;
+    --muted:#6B7686;
+    --green:#1B8E5A;
+    --green-bg:#E7F5EE;
+    --red:#C0392B;
+    --red-bg:#FBEAE8;
+    --amber:#B8791A;
+    --amber-bg:#FBF1DF;
+    --blue:#2A5AA8;
+    --blue-bg:#EAF0FA;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:14px;}
+  h1,h2,h3,.display{font-family:'Space Grotesk',sans-serif;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  #app{min-height:100vh;}
+
+  /* ---------- Login ---------- */
+  .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:
+    radial-gradient(circle at 15% 15%, rgba(255,255,255,0.06), transparent 45%),
+    linear-gradient(160deg, var(--navy) 0%, var(--navy-2) 55%, var(--slate) 100%);}
+  .login-card{background:var(--card);width:380px;max-width:90vw;border-radius:14px;padding:36px 32px;box-shadow:0 30px 60px rgba(10,15,30,0.35);}
+  .login-eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-bottom:6px;}
+  .login-title{font-size:22px;font-weight:700;margin:0 0 4px;color:var(--navy);}
+  .login-sub{font-size:13px;color:var(--muted);margin:0 0 26px;}
+  .field{margin-bottom:16px;}
+  .field label{display:block;font-size:12px;font-weight:600;color:var(--slate);margin-bottom:6px;}
+  .field input, select{width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:8px;font-size:14px;font-family:inherit;color:var(--text);background:#fff;}
+  .field input:focus, select:focus{outline:none;border-color:var(--slate);}
+  .btn{border:none;border-radius:8px;padding:11px 18px;font-weight:600;font-size:13px;cursor:pointer;font-family:'Inter',sans-serif;transition:transform .08s ease, opacity .15s;}
+  .btn:active{transform:scale(0.98);}
+  .btn-primary{background:var(--navy);color:#fff;width:100%;}
+  .btn-primary:hover{opacity:.92;}
+  .btn-ghost{background:transparent;color:var(--slate);border:1.5px solid var(--line);}
+  .btn-sm{padding:7px 12px;font-size:12px;border-radius:6px;}
+  .err{background:var(--red-bg);color:var(--red);padding:9px 12px;border-radius:7px;font-size:12.5px;margin-bottom:14px;font-weight:500;}
+  .login-hint{margin-top:22px;font-size:11.5px;color:var(--muted);line-height:1.6;border-top:1px dashed var(--line);padding-top:14px;}
+
+  /* ---------- Shell ---------- */
+  .topbar{background:var(--navy);color:#fff;padding:14px 26px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;}
+  .brand{display:flex;align-items:center;gap:12px;}
+  .brand-mark{width:34px;height:34px;border-radius:8px;background:linear-gradient(135deg,#3D5A9A,#1B2A4A);display:flex;align-items:center;justify-content:center;font-weight:700;font-family:'Space Grotesk';font-size:14px;}
+  .brand-text .t1{font-size:13px;font-weight:700;letter-spacing:.02em;}
+  .brand-text .t2{font-size:11px;color:#AEB9D4;}
+  .top-right{display:flex;align-items:center;gap:14px;}
+  .today-pill{background:rgba(255,255,255,0.1);padding:6px 12px;border-radius:20px;font-size:12px;font-weight:600;}
+  .logout{color:#DCE3F5;font-size:12.5px;cursor:pointer;text-decoration:underline;background:none;border:none;font-family:inherit;}
+
+  .container{max-width:1180px;margin:0 auto;padding:24px 20px 60px;}
+  .tabs{display:flex;gap:6px;margin-bottom:20px;background:var(--card);padding:5px;border-radius:10px;width:fit-content;border:1px solid var(--line);}
+  .tab{padding:8px 16px;border-radius:7px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;border:none;background:none;font-family:inherit;}
+  .tab.active{background:var(--navy);color:#fff;}
+
+  .cards-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-bottom:22px;}
+  .stat-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;}
+  .stat-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700;margin-bottom:8px;}
+  .stat-value{font-size:23px;font-weight:700;font-family:'Space Grotesk';}
+  .stat-sub{font-size:11.5px;color:var(--muted);margin-top:4px;}
+  .pos{color:var(--green);} .neg{color:var(--red);}
+
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin-bottom:20px;}
+  .panel h3{margin:0 0 16px;font-size:15px;font-weight:700;color:var(--navy);display:flex;align-items:center;gap:8px;}
+  .panel h3 .cnt{background:var(--blue-bg);color:var(--blue);font-size:11px;padding:2px 8px;border-radius:20px;font-weight:700;}
+
+  .row-flex{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;}
+  .row-flex .field{margin-bottom:0;flex:1;min-width:150px;}
+
+  table{width:100%;border-collapse:collapse;}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:700;padding:8px 10px;border-bottom:2px solid var(--line);}
+  td{padding:10px;border-bottom:1px solid var(--line);font-size:13.5px;}
+  tr.clickable{cursor:pointer;}
+  tr.clickable:hover td{background:#FAFBFD;}
+  .num{text-align:right;font-family:'IBM Plex Mono',monospace;}
+
+  .badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700;}
+  .badge-gray{background:#EEF0F4;color:#7C8798;}
+  .badge-amber{background:var(--amber-bg);color:var(--amber);}
+  .badge-blue{background:var(--blue-bg);color:var(--blue);}
+  .badge-green{background:var(--green-bg);color:var(--green);}
+  .badge-red{background:var(--red-bg);color:var(--red);}
+
+  .meter{background:#EEF0F4;height:7px;border-radius:20px;overflow:hidden;width:100%;min-width:70px;}
+  .meter-fill{height:100%;border-radius:20px;}
+
+  .entry-row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px dashed var(--line);font-size:13px;}
+  .entry-row:last-child{border-bottom:none;}
+  .entry-del{color:var(--red);cursor:pointer;font-size:11px;font-weight:700;background:none;border:none;font-family:inherit;}
+  .empty-note{color:var(--muted);font-size:13px;padding:14px 0;text-align:center;}
+
+  .plan-set-box{display:flex;gap:10px;align-items:center;background:var(--blue-bg);padding:12px 14px;border-radius:8px;margin-bottom:16px;}
+  .plan-set-box .amt{font-weight:700;font-size:16px;color:var(--navy);font-family:'IBM Plex Mono';}
+  .link-btn{background:none;border:none;color:var(--slate);font-size:12px;font-weight:600;cursor:pointer;text-decoration:underline;font-family:inherit;}
+
+  .loading{padding:30px;text-align:center;color:var(--muted);font-size:13px;}
+  .expand-row td{background:#FBFCFE;}
+  select#nsmDateInput, input#nsmDateInput{width:auto;}
+  .footer-note{font-size:11px;color:var(--muted);text-align:center;margin-top:30px;line-height:1.7;}
+  .setup-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);padding:20px;}
+  .setup-card{max-width:520px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:32px;}
+  .setup-card h2{margin:0 0 10px;color:var(--navy);}
+  .setup-card code{background:#EEF0F4;padding:2px 6px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;}
+  .setup-card ol{padding-left:20px;line-height:1.9;font-size:13.5px;}
+
+  /* ---------- App-like mobile layer ---------- */
+  input, select, button{ font-size:16px; } /* prevents iOS auto-zoom on focus */
+  @keyframes pulse{ 0%,100%{opacity:1;} 50%{opacity:.35;} }
+  .btn{ min-height:46px; }
+  .bottom-nav{
+    display:none;
+    position:fixed; left:0; right:0; bottom:0; z-index:40;
+    background:#fff; border-top:1px solid var(--line);
+    padding:6px 6px calc(6px + env(safe-area-inset-bottom));
+    box-shadow:0 -6px 20px rgba(10,15,30,0.06);
+  }
+  .bottom-nav-row{display:flex; gap:4px;}
+  .bottom-nav-item{
+    flex:1; border:none; background:none; font-family:'Inter',sans-serif;
+    display:flex; flex-direction:column; align-items:center; gap:3px;
+    padding:8px 4px; border-radius:10px; color:var(--muted); font-size:11px; font-weight:600;
+  }
+  .bottom-nav-item .ic{font-size:18px; line-height:1;}
+  .bottom-nav-item.active{color:var(--navy); background:var(--blue-bg);}
+
+  .town-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:10px;}
+  .town-card{
+    background:var(--card); border:1.5px solid var(--line); border-radius:12px;
+    padding:14px 14px; text-align:left; cursor:pointer; font-family:inherit;
+    display:flex; flex-direction:column; gap:8px; min-height:96px; position:relative;
+  }
+  .town-card:active{ transform:scale(0.98); }
+  .town-card .tc-name{font-weight:700; font-size:14.5px; color:var(--text); padding-right:60px;}
+  .town-card .tc-nums{display:flex; justify-content:space-between; font-size:12px; color:var(--muted);}
+  .town-card .tc-nums b{color:var(--text); font-family:'IBM Plex Mono';}
+  .town-card .tc-badge{position:absolute; top:12px; right:12px;}
+
+  .entry-screen-header{display:flex; align-items:center; gap:10px; margin-bottom:16px;}
+  .back-btn{
+    background:var(--blue-bg); color:var(--navy); border:none; width:38px; height:38px;
+    border-radius:10px; font-size:18px; cursor:pointer; display:flex; align-items:center; justify-content:center;
+    flex-shrink:0;
+  }
+  .entry-screen-header h2{margin:0; font-size:17px; color:var(--navy);}
+
+  .amount-input-lg{
+    width:100%; padding:16px 14px; border:1.5px solid var(--line); border-radius:10px;
+    font-size:22px; font-weight:700; font-family:'IBM Plex Mono',monospace; color:var(--navy);
+  }
+  .amount-input-lg:focus{outline:none; border-color:var(--slate);}
+
+  @media(max-width:720px){
+    .topbar{padding:12px 16px;}
+    .container{padding:14px 12px 96px;}
+    .tabs.desktop-tabs{display:none;}
+    .bottom-nav{display:block;}
+    .cards-row{grid-template-columns:repeat(2,1fr);}
+    .stat-value{font-size:19px;}
+    table.responsive-table thead{display:none;}
+    table.responsive-table, table.responsive-table tbody, table.responsive-table tr, table.responsive-table td{display:block; width:100%;}
+    table.responsive-table tr{border:1px solid var(--line); border-radius:10px; margin-bottom:10px; padding:6px 4px; background:#fff;}
+    table.responsive-table td{border-bottom:none; display:flex; justify-content:space-between; align-items:center; padding:7px 10px;}
+    table.responsive-table td::before{content:attr(data-label); font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase;}
+    table.responsive-table td.num{text-align:right;}
+    table.responsive-table tr.expand-row{border:none; margin:0; padding:0; background:none;}
+    table.responsive-table tr.expand-row td{display:block; padding:0;}
+    table.responsive-table tr.expand-row td::before{display:none;}
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+/* ============================= SUPABASE CONFIG ============================= */
+// Paste your project's values here (Supabase dashboard > Project Settings > API).
+// SUPABASE_ANON_KEY is safe to expose in client-side code by design — it's
+// restricted by the Row Level Security policies set up in supabase_schema.sql.
+const SUPABASE_URL = 'https://nqxljjrkafcjfxjpfcao.supabase.co';       // e.g. https://abcxyz.supabase.co
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5xeGxqanJrYWZjamZ4anBmY2FvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ3OTUzMTUsImV4cCI6MjEwMDM3MTMxNX0.IeF-JviusILsTdBMOGMwWpyrdTSLPdDHxn_TUdpbxoo';
+
+const SUPABASE_CONFIGURED = !SUPABASE_URL.includes('YOUR_') && !SUPABASE_ANON_KEY.includes('YOUR_');
+const sb = SUPABASE_CONFIGURED ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+/* ============================= DATA MODEL ============================= */
+const TOWN_DATA = {
+  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad'] },
+  jamal:   { name:'Jamal e Rabbi',   towns:['Multan','Dera Ghazi Khan','Muzaffargarh','Bahawalnagar','Chishtian','Bahawalpur','Ahmedpur East','Mian Channu','Vehari','Karachi'] },
+  danish:  { name:'Danish Imran',    towns:['Lahore','Gujranwala','Kasur','Sheikhupura','Pattoki','Kamonki'] },
+  qaiser:  { name:'Qaiser Raza Baig',towns:['Faisalabad','Sahiwal','Okara','Pak Pattan','Burewala'] },
+  sajid:   { name:'Sajid Subhani',   towns:['Rawalpindi','Wah Cantt','Chakwal','Dina','Lalamusa','Bhimber','Gujrat','Sargodha','Mandi Bahauddin','Phalia','Jhang Saddar','Pirmahal','Mianwali','DI Khan','Bannu','Layyah','Hafizabad','Wazirabad','Sialkot','Narowal'] },
+  arif:    { name:'Arif Saeed',      towns:['Peshawar','Kohat','Mingora','Dir','Skardu','Gilgit','Mardan','Takht Bahi','Muzaffarabad','Abbottabad','Attock City'] }
+};
+const RSM_IDS = Object.keys(TOWN_DATA);
+
+const USERS = {
+  yaqoob:{password:'yaqoob2026', role:'rsm', rsmId:'yaqoob'},
+  jamal:{password:'jamal2026', role:'rsm', rsmId:'jamal'},
+  danish:{password:'danish2026', role:'rsm', rsmId:'danish'},
+  qaiser:{password:'qaiser2026', role:'rsm', rsmId:'qaiser'},
+  sajid:{password:'sajid2026', role:'rsm', rsmId:'sajid'},
+  arif:{password:'arif2026', role:'rsm', rsmId:'arif'},
+  nsm:{password:'nsm2026', role:'nsm'}
+};
+
+/* ============================= STATE ============================= */
+let state = {
+  user:null,
+  loginError:'',
+  rsmView:'today',       // today | yesterday | mtd
+  selectedTown:null,
+  todayRecord:null,
+  yesterdayRecord:null,
+  mtdData:null,
+  loadingKey:null,
+  nsmView:'daily',
+  nsmDate: todayStr(),
+  nsmDailyRecords:null,
+  nsmMtdData:null,
+  nsmLastUpdated:null,
+  expandedRsm:null
+};
+
+/* ============================= SESSION PERSISTENCE ============================= */
+// Keeps the logged-in user and current screen across a page refresh.
+// This deploys as a standalone site (GitHub Pages), so localStorage works normally
+// in the actual browser it's installed/opened in.
+const SESSION_KEY = 'dil_portal_session_v1';
+function saveSession(){
+  try{
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      user: state.user,
+      rsmView: state.rsmView,
+      selectedTown: state.selectedTown,
+      nsmView: state.nsmView,
+      nsmDate: state.nsmDate,
+      expandedRsm: state.expandedRsm
+    }));
+  }catch(e){ /* private browsing / storage disabled — degrade gracefully, no persistence */ }
+}
+function restoreSession(){
+  try{
+    const raw = localStorage.getItem(SESSION_KEY);
+    if(!raw) return;
+    const s = JSON.parse(raw);
+    if(s.user) state.user = s.user;
+    if(s.rsmView) state.rsmView = s.rsmView;
+    if(s.selectedTown) state.selectedTown = s.selectedTown;
+    if(s.nsmView) state.nsmView = s.nsmView;
+    if(s.nsmDate) state.nsmDate = s.nsmDate;
+    if(s.expandedRsm) state.expandedRsm = s.expandedRsm;
+  }catch(e){ /* corrupted or unavailable session data — start fresh */ }
+}
+
+/* ============================= HELPERS ============================= */
+function todayStr(offset=0){
+  const d = new Date();
+  d.setDate(d.getDate()+offset);
+  return d.toISOString().slice(0,10);
+}
+function prettyDate(iso){
+  const d = new Date(iso+'T00:00:00');
+  return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
+}
+function fmt(n){
+  n = Number(n)||0;
+  return 'Rs ' + Math.round(n).toLocaleString('en-US');
+}
+function esc(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function emptyRecord(){ return {plans:{}, entries:{}}; }
+function firstOfMonth(iso){ const d=new Date(iso+'T00:00:00'); return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0,10); }
+function daysBetweenInclusive(fromIso, toIso){
+  const a=new Date(fromIso+'T00:00:00'), b=new Date(toIso+'T00:00:00');
+  return Math.round((b-a)/86400000)+1;
+}
+function fmtEntryTime(iso){
+  return new Date(iso).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+}
+
+/* ---- build a {plans:{town:amt}, entries:{town:[{id,amount,note,time}]}} record from raw rows ---- */
+function buildRecord(plansRows, entriesRows, rsmId, date){
+  const rec = emptyRecord();
+  plansRows.filter(p=>p.rsm_id===rsmId && p.plan_date===date).forEach(p=> rec.plans[p.town]=Number(p.amount));
+  entriesRows.filter(e=>e.rsm_id===rsmId && e.entry_date===date).forEach(e=>{
+    rec.entries[e.town] = rec.entries[e.town] || [];
+    rec.entries[e.town].push({id:e.id, amount:Number(e.amount), note:e.note, time: fmtEntryTime(e.entry_time)});
+  });
+  return rec;
+}
+
+/* ---- single-day fetch for one RSM (today / yesterday tabs) ---- */
+async function getRecord(rsmId, date){
+  if(!sb) return emptyRecord();
+  const [plansRes, entriesRes] = await Promise.all([
+    sb.from('payment_plans').select('*').eq('rsm_id',rsmId).eq('plan_date',date),
+    sb.from('payment_entries').select('*').eq('rsm_id',rsmId).eq('entry_date',date).order('entry_time',{ascending:true})
+  ]);
+  if(plansRes.error) console.error(plansRes.error);
+  if(entriesRes.error) console.error(entriesRes.error);
+  return buildRecord(plansRes.data||[], entriesRes.data||[], rsmId, date);
+}
+async function refreshTodayRecord(){
+  state.todayRecord = await getRecord(state.user.rsmId, todayStr());
+}
+
+/* ---- mutations ---- */
+async function dbSetPlan(rsmId, town, date, amount){
+  const {error} = await sb.from('payment_plans')
+    .upsert({rsm_id:rsmId, town, plan_date:date, amount}, {onConflict:'rsm_id,town,plan_date'});
+  if(error){ alert('Could not save plan: '+error.message); return false; }
+  return true;
+}
+async function dbDeletePlan(rsmId, town, date){
+  const {error} = await sb.from('payment_plans').delete().eq('rsm_id',rsmId).eq('town',town).eq('plan_date',date);
+  if(error){ alert('Could not remove plan: '+error.message); return false; }
+  return true;
+}
+async function dbAddEntry(rsmId, town, date, amount, note){
+  const {error} = await sb.from('payment_entries').insert({rsm_id:rsmId, town, entry_date:date, amount, note});
+  if(error){ alert('Could not save receipt: '+error.message); return false; }
+  return true;
+}
+async function dbDeleteEntry(id){
+  const {error} = await sb.from('payment_entries').delete().eq('id', id);
+  if(error){ alert('Could not remove entry: '+error.message); return false; }
+  return true;
+}
+
+/* ---- month-range fetch, aggregated by town, for one RSM (MTD tab) ---- */
+async function buildRsmMtd(rsmId){
+  const dateFrom = firstOfMonth(todayStr()), dateTo = todayStr();
+  const [plansRes, entriesRes] = await Promise.all([
+    sb.from('payment_plans').select('*').eq('rsm_id',rsmId).gte('plan_date',dateFrom).lte('plan_date',dateTo),
+    sb.from('payment_entries').select('*').eq('rsm_id',rsmId).gte('entry_date',dateFrom).lte('entry_date',dateTo)
+  ]);
+  const towns = TOWN_DATA[rsmId].towns;
+  const agg = {}; towns.forEach(t=>agg[t]={plan:0,received:0,daysReported:new Set()});
+  (plansRes.data||[]).forEach(p=>{ if(agg[p.town]){ agg[p.town].plan += Number(p.amount); agg[p.town].daysReported.add(p.plan_date); }});
+  (entriesRes.data||[]).forEach(e=>{ if(agg[e.town]){ agg[e.town].received += Number(e.amount); agg[e.town].daysReported.add(e.entry_date); }});
+  towns.forEach(t=> agg[t].daysReported = agg[t].daysReported.size);
+  return {agg, daysElapsed: daysBetweenInclusive(dateFrom, dateTo)};
+}
+
+/* ---- single-day fetch across ALL RSMs (NSM daily dashboard) ---- */
+async function loadNsmDailyAll(date){
+  const [plansRes, entriesRes] = await Promise.all([
+    sb.from('payment_plans').select('*').eq('plan_date', date),
+    sb.from('payment_entries').select('*').eq('entry_date', date)
+  ]);
+  const out = {};
+  RSM_IDS.forEach(id => out[id] = buildRecord(plansRes.data||[], entriesRes.data||[], id, date));
+  return out;
+}
+
+/* ---- month-range fetch across ALL RSMs (NSM MTD dashboard) ---- */
+async function loadNsmMtdAll(){
+  const dateFrom = firstOfMonth(todayStr()), dateTo = todayStr();
+  const [plansRes, entriesRes] = await Promise.all([
+    sb.from('payment_plans').select('*').gte('plan_date',dateFrom).lte('plan_date',dateTo),
+    sb.from('payment_entries').select('*').gte('entry_date',dateFrom).lte('entry_date',dateTo)
+  ]);
+  const daysElapsed = daysBetweenInclusive(dateFrom, dateTo);
+  const out = {};
+  RSM_IDS.forEach(id=>{
+    const towns = TOWN_DATA[id].towns;
+    const agg={}; towns.forEach(t=>agg[t]={plan:0,received:0,daysReported:new Set()});
+    (plansRes.data||[]).filter(p=>p.rsm_id===id).forEach(p=>{ if(agg[p.town]){agg[p.town].plan+=Number(p.amount); agg[p.town].daysReported.add(p.plan_date);} });
+    (entriesRes.data||[]).filter(e=>e.rsm_id===id).forEach(e=>{ if(agg[e.town]){agg[e.town].received+=Number(e.amount); agg[e.town].daysReported.add(e.entry_date);} });
+    towns.forEach(t=>agg[t].daysReported=agg[t].daysReported.size);
+    out[id] = {agg, daysElapsed};
+  });
+  return out;
+}
+
+function townTotals(rec, town){
+  const plan = (rec.plans && rec.plans[town]) || 0;
+  const entries = (rec.entries && rec.entries[town]) || [];
+  const received = entries.reduce((s,e)=>s+Number(e.amount||0),0);
+  return {plan, received, variance: received-plan, entries};
+}
+function achievementPct(plan, received){
+  if(plan<=0) return received>0 ? 100 : 0;
+  return (received/plan)*100;
+}
+function meterColor(pct){
+  if(pct>=100) return 'var(--green)';
+  if(pct>=60) return 'var(--blue)';
+  if(pct>0) return 'var(--amber)';
+  return '#D7DBE4';
+}
+/* ============================= RENDER ROOT ============================= */
+function render(){
+  saveSession();
+  const app = document.getElementById('app');
+  if(!SUPABASE_CONFIGURED){ app.innerHTML = renderSetupBanner(); return; }
+  if(!state.user){ app.innerHTML = renderLogin(); return; }
+  if(state.user.role==='rsm'){ app.innerHTML = renderRsmShell(); loadRsmView(); }
+  else { app.innerHTML = renderNsmShell(); loadNsmView(); }
+}
+
+function renderSetupBanner(){
+  return `
+  <div class="setup-wrap">
+    <div class="setup-card">
+      <h2>Connect Supabase to finish setup</h2>
+      <p style="color:var(--muted);font-size:13.5px;">This copy of the portal isn't connected to a database yet.</p>
+      <ol>
+        <li>In Supabase, run <code>supabase_schema.sql</code> under SQL Editor.</li>
+        <li>Go to Project Settings → API and copy the <b>Project URL</b> and <b>anon public key</b>.</li>
+        <li>Open this HTML file and paste them into <code>SUPABASE_URL</code> and <code>SUPABASE_ANON_KEY</code> near the top of the <code>&lt;script&gt;</code> tag.</li>
+        <li>Save, and push to GitHub / redeploy on Pages.</li>
+      </ol>
+    </div>
+  </div>`;
+}
+
+/* ============================= LOGIN ============================= */
+function renderLogin(){
+  return `
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="login-eyebrow">Dollar Industries Limited</div>
+      <h1 class="login-title">DOLLAR Daily Payment & Collection Info Portal</h1>
+      <p class="login-sub">RSM town-wise plan &amp; receiving, updated live for head office.</p>
+      ${state.loginError ? `<div class="err">${esc(state.loginError)}</div>` : ''}
+      <div class="field">
+        <label>Username</label>
+        <input id="loginUser" placeholder="e.g. yaqoob" autocomplete="username">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input id="loginPass" type="password" placeholder="••••••••" autocomplete="current-password">
+      </div>
+      <button class="btn btn-primary" onclick="doLogin()">Sign in</button>
+      <div class="login-hint">7 logins are configured: 6 RSM accounts (town-restricted, data entry) and 1 NSM account (view-only, all regions). Passwords were auto-generated — ask Adnan to update the USERS object in this file to change them.</div>
+    </div>
+  </div>`;
+}
+function doLogin(){
+  const u = document.getElementById('loginUser').value.trim().toLowerCase();
+  const p = document.getElementById('loginPass').value;
+  const rec = USERS[u];
+  if(!rec || rec.password!==p){
+    state.loginError = 'Incorrect username or password.';
+    render();
+    return;
+  }
+  state.loginError='';
+  state.user = {username:u, role:rec.role, rsmId:rec.rsmId||null, name: rec.rsmId ? TOWN_DATA[rec.rsmId].name : 'NSM — Head Office'};
+  state.rsmView='today'; state.selectedTown=null; state.todayRecord=null; state.yesterdayRecord=null; state.mtdData=null;
+  state.nsmView='daily'; state.nsmDate=todayStr(); state.nsmDailyRecords=null; state.nsmMtdData=null; state.expandedRsm=null;
+  render();
+}
+function doLogout(){
+  state.user=null;
+  try{ localStorage.removeItem(SESSION_KEY); }catch(e){}
+  stopNsmPolling();
+  render();
+}
+
+/* ============================= RSM SHELL ============================= */
+function renderRsmShell(){
+  const towns = TOWN_DATA[state.user.rsmId].towns;
+  return `
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark">DIL</div>
+      <div class="brand-text">
+        <div class="t1">${esc(state.user.name)}</div>
+        <div class="t2">Regional Sales Manager · ${towns.length} towns</div>
+      </div>
+    </div>
+    <div class="top-right">
+      <div class="today-pill">Today · ${prettyDate(todayStr())}</div>
+      <button class="logout" onclick="doLogout()">Log out</button>
+    </div>
+  </div>
+  <div class="container">
+    <div class="tabs desktop-tabs">
+      <button class="tab ${state.rsmView==='today'?'active':''}" onclick="setRsmView('today')">Today</button>
+      <button class="tab ${state.rsmView==='yesterday'?'active':''}" onclick="setRsmView('yesterday')">Yesterday</button>
+      <button class="tab ${state.rsmView==='mtd'?'active':''}" onclick="setRsmView('mtd')">MTD Report</button>
+    </div>
+    <div id="rsmBody"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="bottom-nav">
+    <div class="bottom-nav-row">
+      <button class="bottom-nav-item ${state.rsmView==='today'?'active':''}" onclick="setRsmView('today')"><span class="ic">●</span>Today</button>
+      <button class="bottom-nav-item ${state.rsmView==='yesterday'?'active':''}" onclick="setRsmView('yesterday')"><span class="ic">◐</span>Yesterday</button>
+      <button class="bottom-nav-item ${state.rsmView==='mtd'?'active':''}" onclick="setRsmView('mtd')"><span class="ic">▤</span>MTD</button>
+    </div>
+  </div>`;
+}
+function setRsmView(v){ state.rsmView=v; state.selectedTown=null; render(); }
+
+async function loadRsmView(){
+  const rsmId = state.user.rsmId;
+  const body = document.getElementById('rsmBody');
+  if(state.rsmView==='today'){
+    if(!state.todayRecord) state.todayRecord = await getRecord(rsmId, todayStr());
+    body.innerHTML = renderRsmToday();
+  } else if(state.rsmView==='yesterday'){
+    if(!state.yesterdayRecord) state.yesterdayRecord = await getRecord(rsmId, todayStr(-1));
+    body.innerHTML = renderRsmReadonly(state.yesterdayRecord, 'Yesterday · '+prettyDate(todayStr(-1)));
+  } else {
+    if(!state.mtdData) state.mtdData = await buildRsmMtd(rsmId);
+    body.innerHTML = renderRsmMtd();
+  }
+}
+
+function escJs(s){ return esc(s).replace(/'/g,"\\'"); }
+
+function renderRsmToday(){
+  const towns = TOWN_DATA[state.user.rsmId].towns;
+  const rec = state.todayRecord;
+
+  if(state.selectedTown){ return renderTownEntryScreen(rec); }
+
+  let totPlan=0, totRecv=0;
+  towns.forEach(t=>{ const tt=townTotals(rec,t); totPlan+=tt.plan; totRecv+=tt.received; });
+  const pct = achievementPct(totPlan, totRecv);
+
+  return `
+  <div class="cards-row">
+    <div class="stat-card"><div class="stat-label">Today's Plan</div><div class="stat-value">${fmt(totPlan)}</div></div>
+    <div class="stat-card"><div class="stat-label">Received So Far</div><div class="stat-value">${fmt(totRecv)}</div></div>
+    <div class="stat-card"><div class="stat-label">Variance</div><div class="stat-value ${totRecv-totPlan>=0?'pos':'neg'}">${fmt(totRecv-totPlan)}</div></div>
+    <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${pct.toFixed(0)}%</div></div>
+  </div>
+  <div class="panel">
+    <h3>Your Towns <span class="cnt">tap a town to enter</span></h3>
+    <div class="town-grid">
+      ${towns.map(t=>{
+        const tt = townTotals(rec,t);
+        const status = tt.plan===0 && tt.entries.length===0 ? {l:'Not started',c:'gray'}
+          : tt.entries.length===0 ? {l:'Plan set',c:'amber'}
+          : tt.received>=tt.plan ? {l:'Achieved',c:'green'}
+          : {l:'Reporting',c:'blue'};
+        return `<button class="town-card" onclick="selectTown('${escJs(t)}')">
+          <span class="tc-badge"><span class="badge badge-${status.c}">${status.l}</span></span>
+          <span class="tc-name">${esc(t)}</span>
+          <span class="tc-nums"><span>Plan</span><b>${fmt(tt.plan)}</b></span>
+          <span class="tc-nums"><span>Received</span><b>${fmt(tt.received)}</b></span>
+        </button>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+function renderTownEntryScreen(rec){
+  const town = state.selectedTown;
+  const tt = townTotals(rec, town);
+  let body;
+  if(!tt.plan){
+    body = `
+    <div class="panel">
+      <label style="display:block;font-size:12px;font-weight:600;color:var(--slate);margin-bottom:8px;">Today's Payment Plan</label>
+      <input id="planInput" class="amount-input-lg" type="number" inputmode="decimal" placeholder="e.g. 500000">
+      <button class="btn btn-primary" style="width:100%;margin-top:12px;" onclick="setPlan()">Set Plan &amp; Start Entry</button>
+    </div>`;
+  } else {
+    body = `
+    <div class="plan-set-box">
+      <div>Plan: <span class="amt">${fmt(tt.plan)}</span></div>
+      <button class="link-btn" onclick="editPlan()">edit</button>
+    </div>
+    <div class="panel">
+      <label style="display:block;font-size:12px;font-weight:600;color:var(--slate);margin-bottom:8px;">Add Receipt</label>
+      <input id="amtInput" class="amount-input-lg" type="number" inputmode="decimal" placeholder="0" style="margin-bottom:10px;">
+      <input id="noteInput" placeholder="Note (optional) — distributor / channel">
+      <button class="btn btn-primary" style="width:100%;margin-top:12px;" onclick="addEntry()">+ Add Receipt</button>
+    </div>
+    <div class="panel">
+      <h3>Entries Today <span class="cnt">${tt.entries.length}</span></h3>
+      ${tt.entries.length===0 ? '<div class="empty-note">No receipts logged yet for this town.</div>' :
+        tt.entries.map(e=>`
+        <div class="entry-row">
+          <span>${e.time} ${e.note?'— '+esc(e.note):''}</span>
+          <span style="display:flex;align-items:center;gap:12px;">
+            <b class="mono">${fmt(e.amount)}</b>
+            <button class="entry-del" onclick="deleteEntry(${e.id})">remove</button>
+          </span>
+        </div>`).join('')}
+      <div class="entry-row" style="border-top:2px solid var(--line);margin-top:4px;padding-top:10px;">
+        <b>Total received</b><b class="mono">${fmt(tt.received)}</b>
+      </div>
+    </div>`;
+  }
+  return `
+  <div class="entry-screen-header">
+    <button class="back-btn" onclick="selectTown(null)">←</button>
+    <h2>${esc(town)}</h2>
+  </div>
+  ${body}`;
+}
+
+function selectTown(t){ state.selectedTown = t || null; render(); }
+async function editPlan(){
+  const ok = await dbDeletePlan(state.user.rsmId, state.selectedTown, todayStr());
+  if(ok){ await refreshTodayRecord(); render(); }
+}
+async function setPlan(){
+  const v = Number(document.getElementById('planInput').value);
+  if(!v || v<=0){ alert('Enter a valid plan amount.'); return; }
+  const ok = await dbSetPlan(state.user.rsmId, state.selectedTown, todayStr(), v);
+  if(ok){ await refreshTodayRecord(); render(); }
+}
+async function addEntry(){
+  const amt = Number(document.getElementById('amtInput').value);
+  const note = document.getElementById('noteInput').value.trim();
+  if(!amt || amt<=0){ alert('Enter a valid receipt amount.'); return; }
+  const ok = await dbAddEntry(state.user.rsmId, state.selectedTown, todayStr(), amt, note);
+  if(ok){ await refreshTodayRecord(); render(); }
+}
+async function deleteEntry(id){
+  const ok = await dbDeleteEntry(id);
+  if(ok){ await refreshTodayRecord(); render(); }
+}
+
+function renderRsmReadonly(rec, label){
+  const towns = TOWN_DATA[state.user.rsmId].towns;
+  let totPlan=0, totRecv=0;
+  towns.forEach(t=>{ const tt=townTotals(rec,t); totPlan+=tt.plan; totRecv+=tt.received; });
+  return `
+  <div class="cards-row">
+    <div class="stat-card"><div class="stat-label">${esc(label)} — Plan</div><div class="stat-value">${fmt(totPlan)}</div></div>
+    <div class="stat-card"><div class="stat-label">Received</div><div class="stat-value">${fmt(totRecv)}</div></div>
+    <div class="stat-card"><div class="stat-label">Variance</div><div class="stat-value ${totRecv-totPlan>=0?'pos':'neg'}">${fmt(totRecv-totPlan)}</div></div>
+    <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${achievementPct(totPlan,totRecv).toFixed(0)}%</div></div>
+  </div>
+  <div class="panel">
+    <h3>Town-wise breakdown</h3>
+    <table class="responsive-table">
+      <thead><tr><th>Town</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th></tr></thead>
+      <tbody>
+      ${towns.map(t=>{ const tt=townTotals(rec,t); return `<tr>
+        <td data-label="Town">${esc(t)}</td><td class="num" data-label="Plan">${fmt(tt.plan)}</td><td class="num" data-label="Received">${fmt(tt.received)}</td>
+        <td class="num ${tt.variance>=0?'pos':'neg'}" data-label="Variance">${fmt(tt.variance)}</td></tr>`; }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function renderRsmMtd(){
+  const towns = TOWN_DATA[state.user.rsmId].towns;
+  const {agg, daysElapsed} = state.mtdData;
+  let totPlan=0, totRecv=0;
+  towns.forEach(t=>{ totPlan+=agg[t].plan; totRecv+=agg[t].received; });
+  return `
+  <div class="cards-row">
+    <div class="stat-card"><div class="stat-label">MTD Plan</div><div class="stat-value">${fmt(totPlan)}</div><div class="stat-sub">${daysElapsed} days elapsed this month</div></div>
+    <div class="stat-card"><div class="stat-label">MTD Received</div><div class="stat-value">${fmt(totRecv)}</div></div>
+    <div class="stat-card"><div class="stat-label">Variance</div><div class="stat-value ${totRecv-totPlan>=0?'pos':'neg'}">${fmt(totRecv-totPlan)}</div></div>
+    <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${achievementPct(totPlan,totRecv).toFixed(0)}%</div></div>
+  </div>
+  <div class="panel">
+    <h3>Town-wise MTD</h3>
+    <table class="responsive-table">
+      <thead><tr><th>Town</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th>Achv.</th><th class="num">Days Reported</th></tr></thead>
+      <tbody>
+      ${towns.map(t=>{ const a=agg[t]; const pct=achievementPct(a.plan,a.received); return `<tr>
+        <td data-label="Town">${esc(t)}</td><td class="num" data-label="Plan">${fmt(a.plan)}</td><td class="num" data-label="Received">${fmt(a.received)}</td>
+        <td class="num ${a.received-a.plan>=0?'pos':'neg'}" data-label="Variance">${fmt(a.received-a.plan)}</td>
+        <td data-label="Achv."><div class="meter"><div class="meter-fill" style="width:${Math.min(pct,100)}%;background:${meterColor(pct)}"></div></div></td>
+        <td class="num" data-label="Days Reported">${a.daysReported}/${daysElapsed}</td></tr>`; }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+/* ============================= NSM SHELL ============================= */
+function renderNsmShell(){
+  return `
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark">DIL</div>
+      <div class="brand-text"><div class="t1">Head Office — NSM View</div><div class="t2">All regions · ${RSM_IDS.length} RSMs · 60 towns</div></div>
+    </div>
+    <div class="top-right">
+      <div class="today-pill">${prettyDate(todayStr())}</div>
+      <button class="logout" onclick="doLogout()">Log out</button>
+    </div>
+  </div>
+  <div class="container">
+    <div class="tabs desktop-tabs">
+      <button class="tab ${state.nsmView==='daily'?'active':''}" onclick="setNsmView('daily')">Daily Dashboard</button>
+      <button class="tab ${state.nsmView==='mtd'?'active':''}" onclick="setNsmView('mtd')">MTD Dashboard</button>
+    </div>
+    <div id="nsmBody"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="bottom-nav">
+    <div class="bottom-nav-row">
+      <button class="bottom-nav-item ${state.nsmView==='daily'?'active':''}" onclick="setNsmView('daily')"><span class="ic">●</span>Daily</button>
+      <button class="bottom-nav-item ${state.nsmView==='mtd'?'active':''}" onclick="setNsmView('mtd')"><span class="ic">▤</span>MTD</button>
+    </div>
+  </div>`;
+}
+function setNsmView(v){ state.nsmView=v; state.expandedRsm=null; render(); }
+
+/* ---- auto-refresh: NSM dashboard re-pulls data on an interval so figures update live ---- */
+let nsmPollTimer = null;
+const NSM_POLL_MS = 20000; // 20s — frequent enough to feel live, light on Supabase reads
+function ensureNsmPolling(){
+  if(nsmPollTimer) return;
+  nsmPollTimer = setInterval(pollNsmBody, NSM_POLL_MS);
+}
+function stopNsmPolling(){
+  if(nsmPollTimer){ clearInterval(nsmPollTimer); nsmPollTimer=null; }
+}
+async function pollNsmBody(){
+  if(!state.user || state.user.role!=='nsm') return;
+  const body = document.getElementById('nsmBody');
+  if(!body) return; // NSM screen not currently mounted
+  if(state.nsmView==='daily'){
+    state.nsmDailyRecords = await loadNsmDailyAll(state.nsmDate);
+    state.nsmLastUpdated = new Date();
+    body.innerHTML = renderNsmDaily();
+  } else {
+    state.nsmMtdData = await loadNsmMtdAll();
+    state.nsmLastUpdated = new Date();
+    body.innerHTML = renderNsmMtd();
+  }
+}
+
+async function loadNsmView(){
+  ensureNsmPolling();
+  const body = document.getElementById('nsmBody');
+  if(state.nsmView==='daily'){
+    if(!state.nsmDailyRecords){ state.nsmDailyRecords = await loadNsmDailyAll(state.nsmDate); state.nsmLastUpdated = new Date(); }
+    body.innerHTML = renderNsmDaily();
+  } else {
+    if(!state.nsmMtdData){ state.nsmMtdData = await loadNsmMtdAll(); state.nsmLastUpdated = new Date(); }
+    body.innerHTML = renderNsmMtd();
+  }
+}
+function changeNsmDate(v){ state.nsmDate=v; state.nsmDailyRecords=null; state.expandedRsm=null; render(); }
+function toggleRsm(id){ state.expandedRsm = state.expandedRsm===id ? null : id; render(); }
+
+function renderNsmDaily(){
+  let totPlan=0, totRecv=0, totTownsAssigned=0, totTownsReported=0;
+  const rows = RSM_IDS.map(id=>{
+    const towns = TOWN_DATA[id].towns;
+    const rec = state.nsmDailyRecords[id];
+    let plan=0, recv=0, reported=0;
+    towns.forEach(t=>{ const tt=townTotals(rec,t); plan+=tt.plan; recv+=tt.received; if(tt.plan>0||tt.entries.length>0) reported++; });
+    totPlan+=plan; totRecv+=recv; totTownsAssigned+=towns.length; totTownsReported+=reported;
+    return {id, name:TOWN_DATA[id].name, plan, recv, reported, total:towns.length};
+  });
+  const pct = achievementPct(totPlan,totRecv);
+  return `
+  <div class="row-flex" style="margin-bottom:18px;align-items:center;">
+    <div class="field" style="max-width:220px;">
+      <label>Viewing date</label>
+      <input id="nsmDateInput" type="date" value="${state.nsmDate}" max="${todayStr()}" onchange="changeNsmDate(this.value)">
+    </div>
+    <div style="font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:6px;padding-bottom:2px;">
+      <span style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block;animation:pulse 2s infinite;"></span>
+      Live · updated ${state.nsmLastUpdated ? state.nsmLastUpdated.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : 'just now'}
+    </div>
+  </div>
+  <div class="cards-row">
+    <div class="stat-card"><div class="stat-label">Total Plan — All Regions</div><div class="stat-value">${fmt(totPlan)}</div></div>
+    <div class="stat-card"><div class="stat-label">Total Received</div><div class="stat-value">${fmt(totRecv)}</div></div>
+    <div class="stat-card"><div class="stat-label">Variance</div><div class="stat-value ${totRecv-totPlan>=0?'pos':'neg'}">${fmt(totRecv-totPlan)}</div></div>
+    <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${pct.toFixed(0)}%</div><div class="stat-sub">${totTownsReported}/${totTownsAssigned} towns reporting</div></div>
+  </div>
+  <div class="panel">
+    <h3>RSM-wise Summary <span class="cnt">tap a row to expand towns</span></h3>
+    <table class="responsive-table">
+      <thead><tr><th>RSM</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th>Achv.</th><th class="num">Reporting</th></tr></thead>
+      <tbody>
+      ${rows.map(r=>{
+        const rpct = achievementPct(r.plan,r.recv);
+        const rowsExpanded = state.expandedRsm===r.id ? renderExpandedTowns(r.id) : '';
+        return `<tr class="clickable" onclick="toggleRsm('${r.id}')">
+          <td data-label="RSM"><b>${esc(r.name)}</b></td>
+          <td class="num" data-label="Plan">${fmt(r.plan)}</td>
+          <td class="num" data-label="Received">${fmt(r.recv)}</td>
+          <td class="num ${r.recv-r.plan>=0?'pos':'neg'}" data-label="Variance">${fmt(r.recv-r.plan)}</td>
+          <td data-label="Achv."><div class="meter"><div class="meter-fill" style="width:${Math.min(rpct,100)}%;background:${meterColor(rpct)}"></div></div></td>
+          <td class="num" data-label="Reporting">${r.reported}/${r.total}</td>
+        </tr>${rowsExpanded}`;
+      }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+function renderExpandedTowns(rsmId){
+  const towns = TOWN_DATA[rsmId].towns;
+  const rec = state.nsmDailyRecords[rsmId];
+  return `<tr class="expand-row"><td colspan="6" style="padding:0;">
+    <table class="responsive-table" style="margin:4px 0 8px;">
+      <thead><tr><th style="padding-left:26px;">Town</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th>Status</th></tr></thead>
+      <tbody>
+      ${towns.map(t=>{
+        const tt=townTotals(rec,t);
+        const status = tt.plan===0 && tt.entries.length===0 ? {l:'Not started',c:'gray'}
+          : tt.entries.length===0 ? {l:'Plan set',c:'amber'}
+          : tt.received>=tt.plan ? {l:'Achieved',c:'green'} : {l:'Reporting',c:'blue'};
+        return `<tr><td data-label="Town" style="padding-left:26px;color:var(--muted);">${esc(t)}</td>
+          <td class="num" data-label="Plan">${fmt(tt.plan)}</td><td class="num" data-label="Received">${fmt(tt.received)}</td>
+          <td class="num ${tt.variance>=0?'pos':'neg'}" data-label="Variance">${fmt(tt.variance)}</td>
+          <td data-label="Status"><span class="badge badge-${status.c}">${status.l}</span></td></tr>`;
+      }).join('')}
+      </tbody>
+    </table>
+  </td></tr>`;
+}
+
+function renderNsmMtd(){
+  let totPlan=0, totRecv=0;
+  const rows = RSM_IDS.map(id=>{
+    const {agg, daysElapsed} = state.nsmMtdData[id];
+    const towns = TOWN_DATA[id].towns;
+    let plan=0, recv=0;
+    towns.forEach(t=>{ plan+=agg[t].plan; recv+=agg[t].received; });
+    totPlan+=plan; totRecv+=recv;
+    return {id, name:TOWN_DATA[id].name, plan, recv, daysElapsed};
+  });
+  const daysElapsed = rows[0] ? rows[0].daysElapsed : 0;
+  return `
+  <div class="cards-row">
+    <div class="stat-card"><div class="stat-label">MTD Plan — All Regions</div><div class="stat-value">${fmt(totPlan)}</div><div class="stat-sub">${daysElapsed} days elapsed this month</div></div>
+    <div class="stat-card"><div class="stat-label">MTD Received</div><div class="stat-value">${fmt(totRecv)}</div></div>
+    <div class="stat-card"><div class="stat-label">Variance</div><div class="stat-value ${totRecv-totPlan>=0?'pos':'neg'}">${fmt(totRecv-totPlan)}</div></div>
+    <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${achievementPct(totPlan,totRecv).toFixed(0)}%</div></div>
+  </div>
+  <div class="panel">
+    <h3>RSM-wise MTD <span class="cnt">tap a row to expand towns</span></h3>
+    <table class="responsive-table">
+      <thead><tr><th>RSM</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th>Achv.</th></tr></thead>
+      <tbody>
+      ${rows.map(r=>{
+        const rpct = achievementPct(r.plan,r.recv);
+        const expanded = state.expandedRsm===r.id ? renderExpandedMtdTowns(r.id) : '';
+        return `<tr class="clickable" onclick="toggleRsm('${r.id}')">
+          <td data-label="RSM"><b>${esc(r.name)}</b></td>
+          <td class="num" data-label="Plan">${fmt(r.plan)}</td>
+          <td class="num" data-label="Received">${fmt(r.recv)}</td>
+          <td class="num ${r.recv-r.plan>=0?'pos':'neg'}" data-label="Variance">${fmt(r.recv-r.plan)}</td>
+          <td data-label="Achv."><div class="meter"><div class="meter-fill" style="width:${Math.min(rpct,100)}%;background:${meterColor(rpct)}"></div></div></td>
+        </tr>${expanded}`;
+      }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+function renderExpandedMtdTowns(rsmId){
+  const towns = TOWN_DATA[rsmId].towns;
+  const {agg, daysElapsed} = state.nsmMtdData[rsmId];
+  return `<tr class="expand-row"><td colspan="5" style="padding:0;">
+    <table class="responsive-table" style="margin:4px 0 8px;">
+      <thead><tr><th style="padding-left:26px;">Town</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th class="num">Days Reported</th></tr></thead>
+      <tbody>
+      ${towns.map(t=>{ const a=agg[t]; return `<tr><td data-label="Town" style="padding-left:26px;color:var(--muted);">${esc(t)}</td>
+        <td class="num" data-label="Plan">${fmt(a.plan)}</td><td class="num" data-label="Received">${fmt(a.received)}</td>
+        <td class="num ${a.received-a.plan>=0?'pos':'neg'}" data-label="Variance">${fmt(a.received-a.plan)}</td>
+        <td class="num" data-label="Days Reported">${a.daysReported}/${daysElapsed}</td></tr>`; }).join('')}
+      </tbody>
+    </table>
+  </td></tr>`;
+}
+
+/* ============================= INIT ============================= */
+restoreSession();
+render();
+</script>
+</body>
+</html>
