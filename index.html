@@ -214,6 +214,8 @@ const TOWN_DATA = {
   arif:    { name:'Arif Saeed',      towns:['Peshawar','Kohat','Mingora','Dir','Skardu','Gilgit','Mardan','Takht Bahi','Muzaffarabad','Abbottabad','Attock City'] }
 };
 const RSM_IDS = Object.keys(TOWN_DATA);
+const TOWN_TO_RSM = {};
+RSM_IDS.forEach(id => TOWN_DATA[id].towns.forEach(t => { TOWN_TO_RSM[t.toLowerCase()] = {rsmId:id, town:t}; }));
 
 const USERS = {
   yaqoob:{password:'yaqoob2026', role:'rsm', rsmId:'yaqoob'},
@@ -240,7 +242,10 @@ let state = {
   nsmDailyRecords:null,
   nsmMtdData:null,
   nsmLastUpdated:null,
-  expandedRsm:null
+  expandedRsm:null,
+  overdueMap:null,        // RSM view: {town: {amount, asOf}}
+  nsmOverdueMap:null,     // NSM view: same, across all towns
+  overdueUploadResult:null
 };
 
 /* ============================= SESSION PERSISTENCE ============================= */
@@ -396,6 +401,41 @@ async function loadNsmMtdAll(){
   return out;
 }
 
+/* ---- overdue / past-due balances (uploaded each morning by HO) ---- */
+// Returns the latest snapshot per town, as of today or earlier — so if HO
+// misses an upload on a given day, the last known figure still shows
+// instead of dropping to zero.
+async function fetchOverdueMap(rsmId){
+  if(!sb) return {};
+  let q = sb.from('overdue_amounts').select('*').lte('as_of_date', todayStr()).order('as_of_date',{ascending:false});
+  if(rsmId) q = q.eq('rsm_id', rsmId);
+  const {data, error} = await q;
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=>{ if(!(r.town in map)) map[r.town] = {amount:Number(r.amount), asOf:r.as_of_date}; });
+  return map;
+}
+function overdueTotal(map){ return Object.values(map||{}).reduce((s,v)=>s+v.amount,0); }
+
+async function uploadOverdueBulk(text){
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  const matched = [], unmatched = [];
+  lines.forEach(line=>{
+    const parts = line.split(/[,\t]/).map(p=>p.trim());
+    if(parts.length<2) { unmatched.push(line); return; }
+    const [rawTown, rawAmt] = parts;
+    const amt = Number(String(rawAmt).replace(/,/g,''));
+    const hit = TOWN_TO_RSM[rawTown.toLowerCase()];
+    if(!hit || isNaN(amt)){ unmatched.push(line); return; }
+    matched.push({rsm_id:hit.rsmId, town:hit.town, as_of_date:todayStr(), amount:amt});
+  });
+  if(matched.length){
+    const {error} = await sb.from('overdue_amounts').upsert(matched, {onConflict:'town,as_of_date'});
+    if(error){ return {ok:false, error:error.message}; }
+  }
+  return {ok:true, matchedCount:matched.length, unmatched};
+}
+
 function townTotals(rec, town){
   const plan = (rec.plans && rec.plans[town]) || 0;
   const entries = (rec.entries && rec.entries[town]) || [];
@@ -444,7 +484,7 @@ function renderLogin(){
   <div class="login-wrap">
     <div class="login-card">
       <div class="login-eyebrow">Dollar Industries Limited</div>
-      <h1 class="login-title">Daily Payment & Collection Info Portal</h1>
+      <h1 class="login-title">DOLLAR Daily Payment & Collection Info Portal</h1>
       <p class="login-sub">RSM town-wise plan &amp; receiving, updated live for head office.</p>
       ${state.loginError ? `<div class="err">${esc(state.loginError)}</div>` : ''}
       <div class="field">
@@ -522,6 +562,7 @@ async function loadRsmView(){
   const body = document.getElementById('rsmBody');
   if(state.rsmView==='today'){
     if(!state.todayRecord) state.todayRecord = await getRecord(rsmId, todayStr());
+    if(!state.overdueMap) state.overdueMap = await fetchOverdueMap(rsmId);
     body.innerHTML = renderRsmToday();
   } else if(state.rsmView==='yesterday'){
     if(!state.yesterdayRecord) state.yesterdayRecord = await getRecord(rsmId, todayStr(-1));
@@ -537,12 +578,17 @@ function escJs(s){ return esc(s).replace(/'/g,"\\'"); }
 function renderRsmToday(){
   const towns = TOWN_DATA[state.user.rsmId].towns;
   const rec = state.todayRecord;
+  const overdueMap = state.overdueMap || {};
 
   if(state.selectedTown){ return renderTownEntryScreen(rec); }
 
   let totPlan=0, totRecv=0;
   towns.forEach(t=>{ const tt=townTotals(rec,t); totPlan+=tt.plan; totRecv+=tt.received; });
   const pct = achievementPct(totPlan, totRecv);
+  const totOverdue = overdueTotal(overdueMap);
+  const overdueAsOf = Object.values(overdueMap)[0] ? Object.values(overdueMap)[0].asOf : null;
+
+  const sortedTowns = [...towns].sort((a,b)=>((overdueMap[b]?.amount||0)-(overdueMap[a]?.amount||0)));
 
   return `
   <div class="cards-row">
@@ -550,12 +596,18 @@ function renderRsmToday(){
     <div class="stat-card"><div class="stat-label">Received So Far</div><div class="stat-value">${fmt(totRecv)}</div></div>
     <div class="stat-card"><div class="stat-label">Variance</div><div class="stat-value ${totRecv-totPlan>=0?'pos':'neg'}">${fmt(totRecv-totPlan)}</div></div>
     <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${pct.toFixed(0)}%</div></div>
+    <div class="stat-card" style="border-color:${totOverdue>0?'#EFC9C3':'var(--line)'};">
+      <div class="stat-label">Total Overdue</div>
+      <div class="stat-value ${totOverdue>0?'neg':''}">${fmt(totOverdue)}</div>
+      <div class="stat-sub">${overdueAsOf?'as of '+prettyDate(overdueAsOf):'not uploaded yet'}</div>
+    </div>
   </div>
   <div class="panel">
-    <h3>Your Towns <span class="cnt">tap a town to enter</span></h3>
+    <h3>Your Towns <span class="cnt">tap a town to enter · sorted by overdue</span></h3>
     <div class="town-grid">
-      ${towns.map(t=>{
+      ${sortedTowns.map(t=>{
         const tt = townTotals(rec,t);
+        const od = overdueMap[t] ? overdueMap[t].amount : 0;
         const status = tt.plan===0 && tt.entries.length===0 ? {l:'Not started',c:'gray'}
           : tt.entries.length===0 ? {l:'Plan set',c:'amber'}
           : tt.received>=tt.plan ? {l:'Achieved',c:'green'}
@@ -565,6 +617,7 @@ function renderRsmToday(){
           <span class="tc-name">${esc(t)}</span>
           <span class="tc-nums"><span>Plan</span><b>${fmt(tt.plan)}</b></span>
           <span class="tc-nums"><span>Received</span><b>${fmt(tt.received)}</b></span>
+          <span class="tc-nums" style="${od>0?'color:var(--red);':''}"><span>Overdue</span><b style="${od>0?'color:var(--red);':''}">${fmt(od)}</b></span>
         </button>`;
       }).join('')}
     </div>
@@ -574,9 +627,17 @@ function renderRsmToday(){
 function renderTownEntryScreen(rec){
   const town = state.selectedTown;
   const tt = townTotals(rec, town);
+  const overdueMap = state.overdueMap || {};
+  const od = overdueMap[town];
+  const overdueBanner = od && od.amount>0 ? `
+    <div class="plan-set-box" style="background:var(--red-bg);margin-bottom:14px;">
+      <div>Overdue balance: <span class="amt" style="color:var(--red);">${fmt(od.amount)}</span></div>
+      <span style="font-size:11px;color:var(--muted);">as of ${prettyDate(od.asOf)}</span>
+    </div>` : '';
   let body;
   if(!tt.plan){
     body = `
+    ${overdueBanner}
     <div class="panel">
       <label style="display:block;font-size:12px;font-weight:600;color:var(--slate);margin-bottom:8px;">Today's Payment Plan</label>
       <input id="planInput" class="amount-input-lg" type="number" inputmode="decimal" placeholder="e.g. 500000">
@@ -584,6 +645,7 @@ function renderTownEntryScreen(rec){
     </div>`;
   } else {
     body = `
+    ${overdueBanner}
     <div class="plan-set-box">
       <div>Plan: <span class="amt">${fmt(tt.plan)}</span></div>
       <button class="link-btn" onclick="editPlan()">edit</button>
@@ -639,6 +701,24 @@ async function addEntry(){
 async function deleteEntry(id){
   const ok = await dbDeleteEntry(id);
   if(ok){ await refreshTodayRecord(); render(); }
+}
+
+async function handleOverdueUpload(){
+  const text = document.getElementById('overdueInput').value;
+  if(!text.trim()){ alert('Paste at least one Town, Amount line first.'); return; }
+  const result = await uploadOverdueBulk(text);
+  if(!result.ok){ alert('Upload failed: '+result.error); return; }
+  state.overdueUploadResult = result;
+  state.nsmOverdueMap = null; // force refetch so figures reflect immediately
+  state.nsmOverdueMap = await fetchOverdueMap(null);
+  render();
+}
+function renderOverdueUploadResult(r){
+  return `
+  <div style="margin-top:12px;padding:12px 14px;border-radius:8px;background:${r.unmatched.length?'var(--amber-bg)':'var(--green-bg)'};font-size:12.5px;">
+    <b>${r.matchedCount} town${r.matchedCount===1?'':'s'} updated</b> for ${prettyDate(todayStr())}.
+    ${r.unmatched.length ? `<div style="margin-top:6px;color:var(--amber);">${r.unmatched.length} line(s) not matched to a known town — check spelling:<br>${r.unmatched.map(l=>esc(l)).join('<br>')}</div>` : ''}
+  </div>`;
 }
 
 function renderRsmReadonly(rec, label){
@@ -749,6 +829,7 @@ async function pollNsmBody(){
 async function loadNsmView(){
   ensureNsmPolling();
   const body = document.getElementById('nsmBody');
+  if(!state.nsmOverdueMap) state.nsmOverdueMap = await fetchOverdueMap(null);
   if(state.nsmView==='daily'){
     if(!state.nsmDailyRecords){ state.nsmDailyRecords = await loadNsmDailyAll(state.nsmDate); state.nsmLastUpdated = new Date(); }
     body.innerHTML = renderNsmDaily();
@@ -762,15 +843,19 @@ function toggleRsm(id){ state.expandedRsm = state.expandedRsm===id ? null : id; 
 
 function renderNsmDaily(){
   let totPlan=0, totRecv=0, totTownsAssigned=0, totTownsReported=0;
+  const overdueMap = state.nsmOverdueMap || {};
   const rows = RSM_IDS.map(id=>{
     const towns = TOWN_DATA[id].towns;
     const rec = state.nsmDailyRecords[id];
-    let plan=0, recv=0, reported=0;
-    towns.forEach(t=>{ const tt=townTotals(rec,t); plan+=tt.plan; recv+=tt.received; if(tt.plan>0||tt.entries.length>0) reported++; });
+    let plan=0, recv=0, reported=0, overdue=0;
+    towns.forEach(t=>{ const tt=townTotals(rec,t); plan+=tt.plan; recv+=tt.received; if(tt.plan>0||tt.entries.length>0) reported++; overdue += (overdueMap[t]?overdueMap[t].amount:0); });
     totPlan+=plan; totRecv+=recv; totTownsAssigned+=towns.length; totTownsReported+=reported;
-    return {id, name:TOWN_DATA[id].name, plan, recv, reported, total:towns.length};
+    return {id, name:TOWN_DATA[id].name, plan, recv, reported, total:towns.length, overdue};
   });
   const pct = achievementPct(totPlan,totRecv);
+  const totOverdue = overdueTotal(overdueMap);
+  const overdueAsOf = Object.values(overdueMap)[0] ? Object.values(overdueMap)[0].asOf : null;
+  const upResult = state.overdueUploadResult;
   return `
   <div class="row-flex" style="margin-bottom:18px;align-items:center;">
     <div class="field" style="max-width:220px;">
@@ -787,11 +872,30 @@ function renderNsmDaily(){
     <div class="stat-card"><div class="stat-label">Total Received</div><div class="stat-value">${fmt(totRecv)}</div></div>
     <div class="stat-card"><div class="stat-label">Variance</div><div class="stat-value ${totRecv-totPlan>=0?'pos':'neg'}">${fmt(totRecv-totPlan)}</div></div>
     <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${pct.toFixed(0)}%</div><div class="stat-sub">${totTownsReported}/${totTownsAssigned} towns reporting</div></div>
+    <div class="stat-card" style="border-color:${totOverdue>0?'#EFC9C3':'var(--line)'};">
+      <div class="stat-label">Total Overdue</div>
+      <div class="stat-value ${totOverdue>0?'neg':''}">${fmt(totOverdue)}</div>
+      <div class="stat-sub">${overdueAsOf?'as of '+prettyDate(overdueAsOf):'not uploaded yet'}</div>
+    </div>
   </div>
+
+  <div class="panel">
+    <h3>Upload Today's Overdue Balances <span class="cnt">town-wise, once daily</span></h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
+      Paste one town per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">Town, Amount</code>
+      (works directly from an Excel column paste). Matches against all 60 towns automatically.
+    </p>
+    <textarea id="overdueInput" rows="5" placeholder="Hyderabad, 245000
+Multan, 180500
+Lahore, 0" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
+    <button class="btn btn-primary" style="margin-top:10px;" onclick="handleOverdueUpload()">Upload for ${prettyDate(todayStr())}</button>
+    ${upResult ? renderOverdueUploadResult(upResult) : ''}
+  </div>
+
   <div class="panel">
     <h3>RSM-wise Summary <span class="cnt">tap a row to expand towns</span></h3>
     <table class="responsive-table">
-      <thead><tr><th>RSM</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th>Achv.</th><th class="num">Reporting</th></tr></thead>
+      <thead><tr><th>RSM</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th class="num">Overdue</th><th>Achv.</th><th class="num">Reporting</th></tr></thead>
       <tbody>
       ${rows.map(r=>{
         const rpct = achievementPct(r.plan,r.recv);
@@ -801,6 +905,7 @@ function renderNsmDaily(){
           <td class="num" data-label="Plan">${fmt(r.plan)}</td>
           <td class="num" data-label="Received">${fmt(r.recv)}</td>
           <td class="num ${r.recv-r.plan>=0?'pos':'neg'}" data-label="Variance">${fmt(r.recv-r.plan)}</td>
+          <td class="num ${r.overdue>0?'neg':''}" data-label="Overdue">${fmt(r.overdue)}</td>
           <td data-label="Achv."><div class="meter"><div class="meter-fill" style="width:${Math.min(rpct,100)}%;background:${meterColor(rpct)}"></div></div></td>
           <td class="num" data-label="Reporting">${r.reported}/${r.total}</td>
         </tr>${rowsExpanded}`;
@@ -812,18 +917,21 @@ function renderNsmDaily(){
 function renderExpandedTowns(rsmId){
   const towns = TOWN_DATA[rsmId].towns;
   const rec = state.nsmDailyRecords[rsmId];
-  return `<tr class="expand-row"><td colspan="6" style="padding:0;">
+  const overdueMap = state.nsmOverdueMap || {};
+  return `<tr class="expand-row"><td colspan="7" style="padding:0;">
     <table class="responsive-table" style="margin:4px 0 8px;">
-      <thead><tr><th style="padding-left:26px;">Town</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th>Status</th></tr></thead>
+      <thead><tr><th style="padding-left:26px;">Town</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th class="num">Overdue</th><th>Status</th></tr></thead>
       <tbody>
       ${towns.map(t=>{
         const tt=townTotals(rec,t);
+        const od = overdueMap[t] ? overdueMap[t].amount : 0;
         const status = tt.plan===0 && tt.entries.length===0 ? {l:'Not started',c:'gray'}
           : tt.entries.length===0 ? {l:'Plan set',c:'amber'}
           : tt.received>=tt.plan ? {l:'Achieved',c:'green'} : {l:'Reporting',c:'blue'};
         return `<tr><td data-label="Town" style="padding-left:26px;color:var(--muted);">${esc(t)}</td>
           <td class="num" data-label="Plan">${fmt(tt.plan)}</td><td class="num" data-label="Received">${fmt(tt.received)}</td>
           <td class="num ${tt.variance>=0?'pos':'neg'}" data-label="Variance">${fmt(tt.variance)}</td>
+          <td class="num ${od>0?'neg':''}" data-label="Overdue">${fmt(od)}</td>
           <td data-label="Status"><span class="badge badge-${status.c}">${status.l}</span></td></tr>`;
       }).join('')}
       </tbody>
