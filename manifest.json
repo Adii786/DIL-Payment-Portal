@@ -1,5 +1,5 @@
 {
-  "name": "DIL Daily Payment Collection Portal",
+  "name": "DIL Daily Payment Plan Tracker",
   "short_name": "DIL Payments",
   "start_url": "./index.html",
   "display": "standalone",
