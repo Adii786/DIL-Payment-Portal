@@ -10,7 +10,7 @@
 <meta name="apple-mobile-web-app-title" content="DIL Payments">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
-<title>DIL — Daily Payment & Collection Info Portal</title>
+<title>DIL — RSM & Town wise Daily Payment Plan</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -224,7 +224,8 @@ const USERS = {
   qaiser:{password:'qaiser2026', role:'rsm', rsmId:'qaiser'},
   sajid:{password:'sajid2026', role:'rsm', rsmId:'sajid'},
   arif:{password:'arif2026', role:'rsm', rsmId:'arif'},
-  nsm:{password:'nsm2026', role:'nsm'}
+  nsm:{password:'nsm2026', role:'nsm'},
+  adnan:{password:'adnan2026', role:'admin'}
 };
 
 /* ============================= STATE ============================= */
@@ -245,7 +246,9 @@ let state = {
   expandedRsm:null,
   overdueMap:null,        // RSM view: {town: {amount, asOf}}
   nsmOverdueMap:null,     // NSM view: same, across all towns
-  overdueUploadResult:null
+  overdueUploadResult:null,
+  overdueUploadDate:null, // admin Upload tab: which date is being edited
+  overdueForDate:null     // admin Upload tab: exact values already saved for that date
 };
 
 /* ============================= SESSION PERSISTENCE ============================= */
@@ -417,7 +420,17 @@ async function fetchOverdueMap(rsmId){
 }
 function overdueTotal(map){ return Object.values(map||{}).reduce((s,v)=>s+v.amount,0); }
 
-async function uploadOverdueBulk(text){
+/* ---- exact snapshot for one specific date (used on the admin Upload tab) ---- */
+async function fetchOverdueForDate(date){
+  if(!sb) return {};
+  const {data, error} = await sb.from('overdue_amounts').select('*').eq('as_of_date', date);
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=>{ map[r.town] = Number(r.amount); });
+  return map;
+}
+
+async function uploadOverdueBulk(text, date){
   const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
   const matched = [], unmatched = [];
   lines.forEach(line=>{
@@ -427,7 +440,7 @@ async function uploadOverdueBulk(text){
     const amt = Number(String(rawAmt).replace(/,/g,''));
     const hit = TOWN_TO_RSM[rawTown.toLowerCase()];
     if(!hit || isNaN(amt)){ unmatched.push(line); return; }
-    matched.push({rsm_id:hit.rsmId, town:hit.town, as_of_date:todayStr(), amount:amt});
+    matched.push({rsm_id:hit.rsmId, town:hit.town, as_of_date:date, amount:amt});
   });
   if(matched.length){
     const {error} = await sb.from('overdue_amounts').upsert(matched, {onConflict:'town,as_of_date'});
@@ -484,7 +497,7 @@ function renderLogin(){
   <div class="login-wrap">
     <div class="login-card">
       <div class="login-eyebrow">Dollar Industries Limited</div>
-      <h1 class="login-title">DOLLAR Daily Payment & Collection Info Portal</h1>
+      <h1 class="login-title">RSM & Town Wise Daily Payment Plan</h1>
       <p class="login-sub">RSM town-wise plan &amp; receiving, updated live for head office.</p>
       ${state.loginError ? `<div class="err">${esc(state.loginError)}</div>` : ''}
       <div class="field">
@@ -510,7 +523,8 @@ function doLogin(){
     return;
   }
   state.loginError='';
-  state.user = {username:u, role:rec.role, rsmId:rec.rsmId||null, name: rec.rsmId ? TOWN_DATA[rec.rsmId].name : 'NSM — Head Office'};
+  const displayName = rec.rsmId ? TOWN_DATA[rec.rsmId].name : (rec.role==='admin' ? 'Sales Ops — Admin' : 'NSM — Head Office');
+  state.user = {username:u, role:rec.role, rsmId:rec.rsmId||null, name: displayName};
   state.rsmView='today'; state.selectedTown=null; state.todayRecord=null; state.yesterdayRecord=null; state.mtdData=null;
   state.nsmView='daily'; state.nsmDate=todayStr(); state.nsmDailyRecords=null; state.nsmMtdData=null; state.expandedRsm=null;
   render();
@@ -704,20 +718,72 @@ async function deleteEntry(id){
 }
 
 async function handleOverdueUpload(){
+  const date = state.overdueUploadDate || todayStr();
   const text = document.getElementById('overdueInput').value;
   if(!text.trim()){ alert('Paste at least one Town, Amount line first.'); return; }
-  const result = await uploadOverdueBulk(text);
+  const result = await uploadOverdueBulk(text, date);
   if(!result.ok){ alert('Upload failed: '+result.error); return; }
   state.overdueUploadResult = result;
-  state.nsmOverdueMap = null; // force refetch so figures reflect immediately
-  state.nsmOverdueMap = await fetchOverdueMap(null);
+  state.overdueForDate = await fetchOverdueForDate(date);
+  state.nsmOverdueMap = await fetchOverdueMap(null); // refresh the "latest" map used on dashboards
   render();
 }
-function renderOverdueUploadResult(r){
+function changeOverdueDate(v){
+  state.overdueUploadDate = v;
+  state.overdueForDate = null;
+  state.overdueUploadResult = null;
+  render();
+}
+function renderOverdueUploadResult(r, date){
   return `
   <div style="margin-top:12px;padding:12px 14px;border-radius:8px;background:${r.unmatched.length?'var(--amber-bg)':'var(--green-bg)'};font-size:12.5px;">
-    <b>${r.matchedCount} town${r.matchedCount===1?'':'s'} updated</b> for ${prettyDate(todayStr())}.
+    <b>${r.matchedCount} town${r.matchedCount===1?'':'s'} updated</b> for ${prettyDate(date)}.
     ${r.unmatched.length ? `<div style="margin-top:6px;color:var(--amber);">${r.unmatched.length} line(s) not matched to a known town — check spelling:<br>${r.unmatched.map(l=>esc(l)).join('<br>')}</div>` : ''}
+  </div>`;
+}
+
+function renderNsmUpload(){
+  const date = state.overdueUploadDate || todayStr();
+  const map = state.overdueForDate || {};
+  const uploadedCount = Object.keys(map).length;
+  const upResult = state.overdueUploadResult;
+  return `
+  <div class="panel">
+    <h3>Upload Town-wise Overdue Balances</h3>
+    <div class="row-flex" style="margin-bottom:14px;">
+      <div class="field" style="max-width:220px;">
+        <label>Upload for date</label>
+        <input id="overdueDateInput" type="date" value="${date}" max="${todayStr()}" onchange="changeOverdueDate(this.value)">
+      </div>
+    </div>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
+      Paste one town per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">Town, Amount</code>
+      (works directly from an Excel column paste). Matches against all 60 towns automatically. Uploading again for the
+      same town and date overwrites the previous value.
+    </p>
+    <textarea id="overdueInput" rows="6" placeholder="Hyderabad, 245000
+Multan, 180500
+Lahore, 0" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
+    <button class="btn btn-primary" style="margin-top:10px;" onclick="handleOverdueUpload()">Upload for ${prettyDate(date)}</button>
+    ${upResult ? renderOverdueUploadResult(upResult, date) : ''}
+  </div>
+
+  <div class="panel">
+    <h3>Status for ${prettyDate(date)} <span class="cnt">${uploadedCount}/60 towns uploaded</span></h3>
+    <table class="responsive-table">
+      <thead><tr><th>RSM</th><th>Town</th><th class="num">Overdue</th><th>Status</th></tr></thead>
+      <tbody>
+      ${RSM_IDS.map(id => TOWN_DATA[id].towns.map(t=>{
+        const has = map[t]!==undefined;
+        return `<tr>
+          <td data-label="RSM">${esc(TOWN_DATA[id].name)}</td>
+          <td data-label="Town">${esc(t)}</td>
+          <td class="num" data-label="Overdue">${has?fmt(map[t]):'—'}</td>
+          <td data-label="Status">${has?'<span class="badge badge-green">Uploaded</span>':'<span class="badge badge-gray">Missing</span>'}</td>
+        </tr>`;
+      }).join('')).join('')}
+      </tbody>
+    </table>
   </div>`;
 }
 
@@ -774,11 +840,12 @@ function renderRsmMtd(){
 
 /* ============================= NSM SHELL ============================= */
 function renderNsmShell(){
+  const isAdmin = state.user.role==='admin';
   return `
   <div class="topbar">
     <div class="brand">
       <div class="brand-mark">DIL</div>
-      <div class="brand-text"><div class="t1">Head Office — NSM View</div><div class="t2">All regions · ${RSM_IDS.length} RSMs · 60 towns</div></div>
+      <div class="brand-text"><div class="t1">${isAdmin?'Sales Ops — Admin View':'Head Office — NSM View'}</div><div class="t2">All regions · ${RSM_IDS.length} RSMs · 60 towns</div></div>
     </div>
     <div class="top-right">
       <div class="today-pill">${prettyDate(todayStr())}</div>
@@ -789,6 +856,7 @@ function renderNsmShell(){
     <div class="tabs desktop-tabs">
       <button class="tab ${state.nsmView==='daily'?'active':''}" onclick="setNsmView('daily')">Daily Dashboard</button>
       <button class="tab ${state.nsmView==='mtd'?'active':''}" onclick="setNsmView('mtd')">MTD Dashboard</button>
+      ${isAdmin ? `<button class="tab ${state.nsmView==='upload'?'active':''}" onclick="setNsmView('upload')">Upload Overdue</button>` : ''}
     </div>
     <div id="nsmBody"><div class="loading">Loading…</div></div>
   </div>
@@ -796,6 +864,7 @@ function renderNsmShell(){
     <div class="bottom-nav-row">
       <button class="bottom-nav-item ${state.nsmView==='daily'?'active':''}" onclick="setNsmView('daily')"><span class="ic">●</span>Daily</button>
       <button class="bottom-nav-item ${state.nsmView==='mtd'?'active':''}" onclick="setNsmView('mtd')"><span class="ic">▤</span>MTD</button>
+      ${isAdmin ? `<button class="bottom-nav-item ${state.nsmView==='upload'?'active':''}" onclick="setNsmView('upload')"><span class="ic">⬆</span>Upload</button>` : ''}
     </div>
   </div>`;
 }
@@ -812,7 +881,8 @@ function stopNsmPolling(){
   if(nsmPollTimer){ clearInterval(nsmPollTimer); nsmPollTimer=null; }
 }
 async function pollNsmBody(){
-  if(!state.user || state.user.role!=='nsm') return;
+  if(!state.user || (state.user.role!=='nsm' && state.user.role!=='admin')) return;
+  if(state.nsmView==='upload') return; // no live polling needed on the upload tab
   const body = document.getElementById('nsmBody');
   if(!body) return; // NSM screen not currently mounted
   if(state.nsmView==='daily'){
@@ -829,6 +899,12 @@ async function pollNsmBody(){
 async function loadNsmView(){
   ensureNsmPolling();
   const body = document.getElementById('nsmBody');
+  if(state.nsmView==='upload'){
+    if(!state.overdueUploadDate) state.overdueUploadDate = todayStr();
+    if(!state.overdueForDate) state.overdueForDate = await fetchOverdueForDate(state.overdueUploadDate);
+    body.innerHTML = renderNsmUpload();
+    return;
+  }
   if(!state.nsmOverdueMap) state.nsmOverdueMap = await fetchOverdueMap(null);
   if(state.nsmView==='daily'){
     if(!state.nsmDailyRecords){ state.nsmDailyRecords = await loadNsmDailyAll(state.nsmDate); state.nsmLastUpdated = new Date(); }
@@ -855,7 +931,6 @@ function renderNsmDaily(){
   const pct = achievementPct(totPlan,totRecv);
   const totOverdue = overdueTotal(overdueMap);
   const overdueAsOf = Object.values(overdueMap)[0] ? Object.values(overdueMap)[0].asOf : null;
-  const upResult = state.overdueUploadResult;
   return `
   <div class="row-flex" style="margin-bottom:18px;align-items:center;">
     <div class="field" style="max-width:220px;">
@@ -877,19 +952,6 @@ function renderNsmDaily(){
       <div class="stat-value ${totOverdue>0?'neg':''}">${fmt(totOverdue)}</div>
       <div class="stat-sub">${overdueAsOf?'as of '+prettyDate(overdueAsOf):'not uploaded yet'}</div>
     </div>
-  </div>
-
-  <div class="panel">
-    <h3>Upload Today's Overdue Balances <span class="cnt">town-wise, once daily</span></h3>
-    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
-      Paste one town per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">Town, Amount</code>
-      (works directly from an Excel column paste). Matches against all 60 towns automatically.
-    </p>
-    <textarea id="overdueInput" rows="5" placeholder="Hyderabad, 245000
-Multan, 180500
-Lahore, 0" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
-    <button class="btn btn-primary" style="margin-top:10px;" onclick="handleOverdueUpload()">Upload for ${prettyDate(todayStr())}</button>
-    ${upResult ? renderOverdueUploadResult(upResult) : ''}
   </div>
 
   <div class="panel">
