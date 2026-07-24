@@ -10,7 +10,7 @@
 <meta name="apple-mobile-web-app-title" content="DIL Payments">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
-<title>DIL — RSM & Town wise Daily Payment Plan</title>
+<title>DIL — Daily Payment Plan Tracker</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -206,7 +206,7 @@ const sb = SUPABASE_CONFIGURED ? supabase.createClient(SUPABASE_URL, SUPABASE_AN
 
 /* ============================= DATA MODEL ============================= */
 const TOWN_DATA = {
-  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad','Khairpur'] },
+  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad'] },
   jamal:   { name:'Jamal e Rabbi',   towns:['Multan','Dera Ghazi Khan','Muzaffargarh','Bahawalnagar','Chishtian','Bahawalpur','Ahmedpur East','Mian Channu','Vehari','Karachi'] },
   danish:  { name:'Danish Imran',    towns:['Lahore','Gujranwala','Kasur','Sheikhupura','Pattoki','Kamonki'] },
   qaiser:  { name:'Qaiser Raza Baig',towns:['Faisalabad','Sahiwal','Okara','Pak Pattan','Burewala'] },
@@ -497,8 +497,8 @@ function renderLogin(){
   <div class="login-wrap">
     <div class="login-card">
       <div class="login-eyebrow">Dollar Industries Limited</div>
-      <h1 class="login-title">RSM & Town Wise Daily Payment Plan</h1>
-      <p class="login-sub">RSM town-wise plan &amp; receiving, updated live for head office.</p>
+      <h1 class="login-title">DIL- Daily Payment Plan Tracker</h1>
+      <p class="login-sub">RSM town-wise plan &amp; receiving, updated live for NSM/HO.</p>
       ${state.loginError ? `<div class="err">${esc(state.loginError)}</div>` : ''}
       <div class="field">
         <label>Username</label>
@@ -527,6 +527,7 @@ function doLogin(){
   state.user = {username:u, role:rec.role, rsmId:rec.rsmId||null, name: displayName};
   state.rsmView='today'; state.selectedTown=null; state.todayRecord=null; state.yesterdayRecord=null; state.mtdData=null;
   state.nsmView='daily'; state.nsmDate=todayStr(); state.nsmDailyRecords=null; state.nsmMtdData=null; state.expandedRsm=null;
+  state.overdueMap=null; state.nsmOverdueMap=null; state.overdueUploadResult=null; state.overdueUploadDate=null; state.overdueForDate=null;
   render();
 }
 function doLogout(){
@@ -1054,6 +1055,22 @@ function renderExpandedMtdTowns(rsmId){
     </table>
   </td></tr>`;
 }
+
+/* ============================= AUTO-REFRESH ON RESUME ============================= */
+// Covers: RSM reopens the installed app after HO updated overdue figures, or switches
+// back to it from another app — without this, a still-open session would keep showing
+// whatever was cached from earlier, until the OS or user forced a full reload.
+function refreshCurrentViewData(){
+  if(!state.user) return;
+  if(state.user.role==='rsm'){
+    state.todayRecord=null; state.yesterdayRecord=null; state.mtdData=null; state.overdueMap=null;
+  } else {
+    state.nsmDailyRecords=null; state.nsmMtdData=null; state.nsmOverdueMap=null; state.overdueForDate=null;
+  }
+  render();
+}
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') refreshCurrentViewData(); });
+window.addEventListener('pageshow', (e)=>{ if(e.persisted) refreshCurrentViewData(); });
 
 /* ============================= INIT ============================= */
 restoreSession();
