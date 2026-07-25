@@ -213,7 +213,7 @@ const sb = SUPABASE_CONFIGURED ? supabase.createClient(SUPABASE_URL, SUPABASE_AN
 
 /* ============================= DATA MODEL ============================= */
 const TOWN_DATA = {
-  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad','Khairpur'] },
+  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad'] },
   jamal:   { name:'Jamal e Rabbi',   towns:['Multan','Dera Ghazi Khan','Muzaffargarh','Bahawalnagar','Chishtian','Bahawalpur','Ahmedpur East','Mian Channu','Vehari','Karachi'] },
   danish:  { name:'Danish Imran',    towns:['Lahore','Gujranwala','Kasur','Sheikhupura','Pattoki','Kamonki'] },
   qaiser:  { name:'Qaiser Raza Baig',towns:['Faisalabad','Sahiwal','Okara','Pak Pattan','Burewala'] },
@@ -412,17 +412,29 @@ async function loadNsmMtdAll(){
 }
 
 /* ---- overdue / past-due balances (uploaded each morning by HO) ---- */
-// Returns the latest snapshot per town, as of today or earlier — so if HO
-// misses an upload on a given day, the last known figure still shows
-// instead of dropping to zero.
+// Each morning's upload is a COMPLETE snapshot of who's overdue — not additive to
+// history. So: find the single most recent date (<= today) that has any upload at
+// all, then show exactly that date's towns. A town that isn't in that batch is
+// treated as cleared (0), even if it had a balance on an earlier date — it is NOT
+// carried forward. If HO hasn't uploaded anything yet today, the last full snapshot
+// (e.g. yesterday's) keeps showing until a new one replaces it.
+async function fetchLatestOverdueDate(){
+  if(!sb) return null;
+  const {data, error} = await sb.from('overdue_amounts').select('as_of_date')
+    .lte('as_of_date', todayStr()).order('as_of_date',{ascending:false}).limit(1);
+  if(error || !data || !data.length) return null;
+  return data[0].as_of_date;
+}
 async function fetchOverdueMap(rsmId){
   if(!sb) return {};
-  let q = sb.from('overdue_amounts').select('*').lte('as_of_date', todayStr()).order('as_of_date',{ascending:false});
+  const latestDate = await fetchLatestOverdueDate();
+  if(!latestDate) return {};
+  let q = sb.from('overdue_amounts').select('*').eq('as_of_date', latestDate);
   if(rsmId) q = q.eq('rsm_id', rsmId);
   const {data, error} = await q;
   if(error){ console.error(error); return {}; }
   const map = {};
-  (data||[]).forEach(r=>{ if(!(r.town in map)) map[r.town] = {amount:Number(r.amount), asOf:r.as_of_date}; });
+  (data||[]).forEach(r=>{ map[r.town] = {amount:Number(r.amount), asOf:r.as_of_date}; });
   return map;
 }
 function overdueTotal(map){ return Object.values(map||{}).reduce((s,v)=>s+v.amount,0); }
@@ -542,6 +554,7 @@ function doLogout(){
   state.user=null;
   try{ localStorage.removeItem(SESSION_KEY); }catch(e){}
   stopNsmPolling();
+  stopRsmPolling();
   render();
 }
 
@@ -581,6 +594,7 @@ function renderRsmShell(){
 function setRsmView(v){ state.rsmView=v; state.selectedTown=null; render(); }
 
 async function loadRsmView(){
+  ensureRsmPolling();
   const rsmId = state.user.rsmId;
   const body = document.getElementById('rsmBody');
   if(state.rsmView==='today'){
@@ -594,6 +608,33 @@ async function loadRsmView(){
     if(!state.mtdData) state.mtdData = await buildRsmMtd(rsmId);
     body.innerHTML = renderRsmMtd();
   }
+}
+
+/* ---- auto-refresh: RSM's Today view re-pulls overdue + own entries on an interval ----
+   Paused whenever a town's entry screen is open, so a background refresh never wipes
+   out an amount the RSM is mid-typing before they hit Add. ---- */
+let rsmPollTimer = null;
+const RSM_POLL_MS = 20000;
+function ensureRsmPolling(){
+  if(rsmPollTimer) return;
+  rsmPollTimer = setInterval(pollRsmBody, RSM_POLL_MS);
+}
+function stopRsmPolling(){
+  if(rsmPollTimer){ clearInterval(rsmPollTimer); rsmPollTimer=null; }
+}
+async function pollRsmBody(){
+  if(!state.user || state.user.role!=='rsm') return;
+  if(state.rsmView!=='today' || state.selectedTown) return; // don't disturb an open entry screen
+  const body = document.getElementById('rsmBody');
+  if(!body) return;
+  const rsmId = state.user.rsmId;
+  const [rec, overdueMap] = await Promise.all([
+    getRecord(rsmId, todayStr()),
+    fetchOverdueMap(rsmId)
+  ]);
+  state.todayRecord = rec;
+  state.overdueMap = overdueMap;
+  body.innerHTML = renderRsmToday();
 }
 
 function escJs(s){ return esc(s).replace(/'/g,"\\'"); }
@@ -894,6 +935,7 @@ async function pollNsmBody(){
   if(state.nsmView==='upload') return; // no live polling needed on the upload tab
   const body = document.getElementById('nsmBody');
   if(!body) return; // NSM screen not currently mounted
+  state.nsmOverdueMap = await fetchOverdueMap(null); // always pick up the latest "as of" overdue upload
   if(state.nsmView==='daily'){
     state.nsmDailyRecords = await loadNsmDailyAll(state.nsmDate);
     state.nsmLastUpdated = new Date();
