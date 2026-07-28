@@ -213,7 +213,7 @@ const sb = SUPABASE_CONFIGURED ? supabase.createClient(SUPABASE_URL, SUPABASE_AN
 
 /* ============================= DATA MODEL ============================= */
 const TOWN_DATA = {
-  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad','Khairpur'] },
+  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad','Khairpur','Turbat'] },
   jamal:   { name:'Jamal e Rabbi',   towns:['Multan','Dera Ghazi Khan','Muzaffargarh','Bahawalnagar','Chishtian','Bahawalpur','Ahmedpur East','Mian Channu','Vehari','Karachi'] },
   danish:  { name:'Danish Imran',    towns:['Lahore','Gujranwala','Kasur','Sheikhupura','Pattoki','Kamonki'] },
   qaiser:  { name:'Qaiser Raza Baig',towns:['Faisalabad','Sahiwal','Okara','Pak Pattan','Burewala'] },
@@ -434,10 +434,23 @@ async function fetchOverdueMap(rsmId){
   const {data, error} = await q;
   if(error){ console.error(error); return {}; }
   const map = {};
-  (data||[]).forEach(r=>{ map[r.town] = {amount:Number(r.amount), asOf:r.as_of_date}; });
+  (data||[]).forEach(r=>{
+    map[r.town] = {
+      amount:Number(r.amount)||0,
+      due2:Number(r.due_2_days)||0,
+      due5:Number(r.due_5_days)||0,
+      due10:Number(r.due_10_days)||0,
+      asOf:r.as_of_date
+    };
+  });
   return map;
 }
 function overdueTotal(map){ return Object.values(map||{}).reduce((s,v)=>s+v.amount,0); }
+function agingTotals(map){
+  const out = {due2:0, due5:0, due10:0, overdue:0};
+  Object.values(map||{}).forEach(v=>{ out.due2+=v.due2||0; out.due5+=v.due5||0; out.due10+=v.due10||0; out.overdue+=v.amount||0; });
+  return out;
+}
 
 /* ---- exact snapshot for one specific date (used on the admin Upload tab) ---- */
 async function fetchOverdueForDate(date){
@@ -445,7 +458,9 @@ async function fetchOverdueForDate(date){
   const {data, error} = await sb.from('overdue_amounts').select('*').eq('as_of_date', date);
   if(error){ console.error(error); return {}; }
   const map = {};
-  (data||[]).forEach(r=>{ map[r.town] = Number(r.amount); });
+  (data||[]).forEach(r=>{
+    map[r.town] = { amount:Number(r.amount)||0, due2:Number(r.due_2_days)||0, due5:Number(r.due_5_days)||0, due10:Number(r.due_10_days)||0 };
+  });
   return map;
 }
 
@@ -454,12 +469,15 @@ async function uploadOverdueBulk(text, date){
   const matched = [], unmatched = [];
   lines.forEach(line=>{
     const parts = line.split(/[,\t]/).map(p=>p.trim());
-    if(parts.length<2) { unmatched.push(line); return; }
-    const [rawTown, rawAmt] = parts;
-    const amt = Number(String(rawAmt).replace(/,/g,''));
+    if(parts.length<5) { unmatched.push(line); return; }
+    const [rawTown, rawDue2, rawDue5, rawDue10, rawOverdue] = parts;
+    const due2 = Number(String(rawDue2).replace(/,/g,''));
+    const due5 = Number(String(rawDue5).replace(/,/g,''));
+    const due10 = Number(String(rawDue10).replace(/,/g,''));
+    const overdue = Number(String(rawOverdue).replace(/,/g,''));
     const hit = TOWN_TO_RSM[rawTown.toLowerCase()];
-    if(!hit || isNaN(amt)){ unmatched.push(line); return; }
-    matched.push({rsm_id:hit.rsmId, town:hit.town, as_of_date:date, amount:amt});
+    if(!hit || [due2,due5,due10,overdue].some(isNaN)){ unmatched.push(line); return; }
+    matched.push({rsm_id:hit.rsmId, town:hit.town, as_of_date:date, due_2_days:due2, due_5_days:due5, due_10_days:due10, amount:overdue});
   });
   if(matched.length){
     const {error} = await sb.from('overdue_amounts').upsert(matched, {onConflict:'town,as_of_date'});
@@ -649,7 +667,7 @@ function renderRsmToday(){
   let totPlan=0, totRecv=0;
   towns.forEach(t=>{ const tt=townTotals(rec,t); totPlan+=tt.plan; totRecv+=tt.received; });
   const pct = achievementPct(totPlan, totRecv);
-  const totOverdue = overdueTotal(overdueMap);
+  const aging = agingTotals(overdueMap);
   const overdueAsOf = Object.values(overdueMap)[0] ? Object.values(overdueMap)[0].asOf : null;
 
   const sortedTowns = [...towns].sort((a,b)=>((overdueMap[b]?.amount||0)-(overdueMap[a]?.amount||0)));
@@ -660,10 +678,17 @@ function renderRsmToday(){
     <div class="stat-card"><div class="stat-label">Received So Far</div><div class="stat-value">${fmt(totRecv)}</div></div>
     <div class="stat-card"><div class="stat-label">Variance</div><div class="stat-value ${totRecv-totPlan>=0?'pos':'neg'}">${fmt(totRecv-totPlan)}</div></div>
     <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${pct.toFixed(0)}%</div></div>
-    <div class="stat-card" style="border-color:${totOverdue>0?'#EFC9C3':'var(--line)'};">
-      <div class="stat-label">Total Overdue</div>
-      <div class="stat-value ${totOverdue>0?'neg':''}">${fmt(totOverdue)}</div>
-      <div class="stat-sub">${overdueAsOf?'as of '+prettyDate(overdueAsOf):'not uploaded yet'}</div>
+  </div>
+  <div class="panel">
+    <h3>Aging Summary <span class="cnt">${overdueAsOf?'as of '+prettyDate(overdueAsOf):'not uploaded yet'}</span></h3>
+    <div class="cards-row">
+      <div class="stat-card"><div class="stat-label">Due in 2 Days</div><div class="stat-value">${fmt(aging.due2)}</div></div>
+      <div class="stat-card"><div class="stat-label">Due in 5 Days</div><div class="stat-value">${fmt(aging.due5)}</div></div>
+      <div class="stat-card"><div class="stat-label">Due in 10 Days</div><div class="stat-value">${fmt(aging.due10)}</div></div>
+      <div class="stat-card" style="border-color:${aging.overdue>0?'#EFC9C3':'var(--line)'};">
+        <div class="stat-label">Total Overdue</div>
+        <div class="stat-value ${aging.overdue>0?'neg':''}">${fmt(aging.overdue)}</div>
+      </div>
     </div>
   </div>
   <div class="panel">
@@ -685,6 +710,24 @@ function renderRsmToday(){
         </button>`;
       }).join('')}
     </div>
+  </div>
+  <div class="panel">
+    <h3>Town-wise Aging <span class="cnt">for follow-up planning</span></h3>
+    <table class="responsive-table">
+      <thead><tr><th>Town</th><th class="num">Due in 2 Days</th><th class="num">Due in 5 Days</th><th class="num">Due in 10 Days</th><th class="num">Overdue</th></tr></thead>
+      <tbody>
+      ${sortedTowns.map(t=>{
+        const a = overdueMap[t] || {due2:0,due5:0,due10:0,amount:0};
+        return `<tr>
+          <td data-label="Town">${esc(t)}</td>
+          <td class="num" data-label="Due in 2 Days">${fmt(a.due2)}</td>
+          <td class="num" data-label="Due in 5 Days">${fmt(a.due5)}</td>
+          <td class="num" data-label="Due in 10 Days">${fmt(a.due10)}</td>
+          <td class="num ${a.amount>0?'neg':''}" data-label="Overdue">${fmt(a.amount)}</td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table>
   </div>`;
 }
 
@@ -693,10 +736,18 @@ function renderTownEntryScreen(rec){
   const tt = townTotals(rec, town);
   const overdueMap = state.overdueMap || {};
   const od = overdueMap[town];
-  const overdueBanner = od && od.amount>0 ? `
-    <div class="plan-set-box" style="background:var(--red-bg);margin-bottom:14px;">
-      <div>Overdue balance: <span class="amt" style="color:var(--red);">${fmt(od.amount)}</span></div>
-      <span style="font-size:11px;color:var(--muted);">as of ${prettyDate(od.asOf)}</span>
+  const hasAging = od && (od.amount>0 || od.due2>0 || od.due5>0 || od.due10>0);
+  const overdueBanner = hasAging ? `
+    <div class="plan-set-box" style="background:var(--red-bg);margin-bottom:14px;flex-direction:column;align-items:stretch;gap:8px;">
+      <div style="display:flex;justify-content:space-between;">
+        <div>Overdue balance: <span class="amt" style="color:var(--red);">${fmt(od.amount)}</span></div>
+        <span style="font-size:11px;color:var(--muted);">as of ${prettyDate(od.asOf)}</span>
+      </div>
+      <div style="display:flex;gap:14px;font-size:12px;color:var(--muted);flex-wrap:wrap;">
+        <span>Due in 2d: <b class="mono" style="color:var(--text);">${fmt(od.due2)}</b></span>
+        <span>Due in 5d: <b class="mono" style="color:var(--text);">${fmt(od.due5)}</b></span>
+        <span>Due in 10d: <b class="mono" style="color:var(--text);">${fmt(od.due10)}</b></span>
+      </div>
     </div>` : '';
   let body;
   if(!tt.plan){
@@ -799,7 +850,7 @@ function renderNsmUpload(){
   const upResult = state.overdueUploadResult;
   return `
   <div class="panel">
-    <h3>Upload Town-wise Overdue Balances</h3>
+    <h3>Upload Town-wise Aging &amp; Overdue Balances</h3>
     <div class="row-flex" style="margin-bottom:14px;">
       <div class="field" style="max-width:220px;">
         <label>Upload for date</label>
@@ -807,13 +858,13 @@ function renderNsmUpload(){
       </div>
     </div>
     <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
-      Paste one town per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">Town, Amount</code>
-      (works directly from an Excel column paste). Matches against all 60 towns automatically. Uploading again for the
-      same town and date overwrites the previous value.
+      Paste one town per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">Town, Due in 2 days, Due in 5 days, Due in 10 days, Over Due Amount</code>
+      — this is exactly the column order in your Excel sheet, just excluding the SR# column (copy columns B through F only).
+      Matches against all 60 towns automatically. Uploading again for the same town and date overwrites the previous values.
     </p>
-    <textarea id="overdueInput" rows="6" placeholder="Hyderabad, 245000
-Multan, 180500
-Lahore, 0" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
+    <textarea id="overdueInput" rows="6" placeholder="Hyderabad, 50000, 80000, 120000, 245000
+Multan, 0, 60000, 90000, 180500
+Lahore, 0, 0, 0, 0" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
     <button class="btn btn-primary" style="margin-top:10px;" onclick="handleOverdueUpload()">Upload for ${prettyDate(date)}</button>
     ${upResult ? renderOverdueUploadResult(upResult, date) : ''}
   </div>
@@ -821,14 +872,18 @@ Lahore, 0" style="width:100%;padding:12px;border:1.5px solid var(--line);border-
   <div class="panel">
     <h3>Status for ${prettyDate(date)} <span class="cnt">${uploadedCount}/60 towns uploaded</span></h3>
     <table class="responsive-table">
-      <thead><tr><th>RSM</th><th>Town</th><th class="num">Overdue</th><th>Status</th></tr></thead>
+      <thead><tr><th>RSM</th><th>Town</th><th class="num">Due 2d</th><th class="num">Due 5d</th><th class="num">Due 10d</th><th class="num">Overdue</th><th>Status</th></tr></thead>
       <tbody>
       ${RSM_IDS.map(id => TOWN_DATA[id].towns.map(t=>{
         const has = map[t]!==undefined;
+        const a = map[t] || {due2:0,due5:0,due10:0,amount:0};
         return `<tr>
           <td data-label="RSM">${esc(TOWN_DATA[id].name)}</td>
           <td data-label="Town">${esc(t)}</td>
-          <td class="num" data-label="Overdue">${has?fmt(map[t]):'—'}</td>
+          <td class="num" data-label="Due 2d">${has?fmt(a.due2):'—'}</td>
+          <td class="num" data-label="Due 5d">${has?fmt(a.due5):'—'}</td>
+          <td class="num" data-label="Due 10d">${has?fmt(a.due10):'—'}</td>
+          <td class="num" data-label="Overdue">${has?fmt(a.amount):'—'}</td>
           <td data-label="Status">${has?'<span class="badge badge-green">Uploaded</span>':'<span class="badge badge-gray">Missing</span>'}</td>
         </tr>`;
       }).join('')).join('')}
@@ -974,13 +1029,17 @@ function renderNsmDaily(){
   const rows = RSM_IDS.map(id=>{
     const towns = TOWN_DATA[id].towns;
     const rec = state.nsmDailyRecords[id];
-    let plan=0, recv=0, reported=0, overdue=0;
-    towns.forEach(t=>{ const tt=townTotals(rec,t); plan+=tt.plan; recv+=tt.received; if(tt.plan>0||tt.entries.length>0) reported++; overdue += (overdueMap[t]?overdueMap[t].amount:0); });
+    let plan=0, recv=0, reported=0, overdue=0, due2=0, due5=0, due10=0;
+    towns.forEach(t=>{
+      const tt=townTotals(rec,t); plan+=tt.plan; recv+=tt.received; if(tt.plan>0||tt.entries.length>0) reported++;
+      const a = overdueMap[t];
+      overdue += a?a.amount:0; due2 += a?a.due2:0; due5 += a?a.due5:0; due10 += a?a.due10:0;
+    });
     totPlan+=plan; totRecv+=recv; totTownsAssigned+=towns.length; totTownsReported+=reported;
-    return {id, name:TOWN_DATA[id].name, plan, recv, reported, total:towns.length, overdue};
+    return {id, name:TOWN_DATA[id].name, plan, recv, reported, total:towns.length, overdue, due2, due5, due10};
   });
   const pct = achievementPct(totPlan,totRecv);
-  const totOverdue = overdueTotal(overdueMap);
+  const aging = agingTotals(overdueMap);
   const overdueAsOf = Object.values(overdueMap)[0] ? Object.values(overdueMap)[0].asOf : null;
   return `
   <div class="row-flex" style="margin-bottom:18px;align-items:center;">
@@ -998,17 +1057,25 @@ function renderNsmDaily(){
     <div class="stat-card"><div class="stat-label">Total Received</div><div class="stat-value">${fmt(totRecv)}</div></div>
     <div class="stat-card"><div class="stat-label">Variance</div><div class="stat-value ${totRecv-totPlan>=0?'pos':'neg'}">${fmt(totRecv-totPlan)}</div></div>
     <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${pct.toFixed(0)}%</div><div class="stat-sub">${totTownsReported}/${totTownsAssigned} towns reporting</div></div>
-    <div class="stat-card" style="border-color:${totOverdue>0?'#EFC9C3':'var(--line)'};">
-      <div class="stat-label">Total Overdue</div>
-      <div class="stat-value ${totOverdue>0?'neg':''}">${fmt(totOverdue)}</div>
-      <div class="stat-sub">${overdueAsOf?'as of '+prettyDate(overdueAsOf):'not uploaded yet'}</div>
+  </div>
+
+  <div class="panel">
+    <h3>Aging Summary — All Regions <span class="cnt">${overdueAsOf?'as of '+prettyDate(overdueAsOf):'not uploaded yet'}</span></h3>
+    <div class="cards-row">
+      <div class="stat-card"><div class="stat-label">Due in 2 Days</div><div class="stat-value">${fmt(aging.due2)}</div></div>
+      <div class="stat-card"><div class="stat-label">Due in 5 Days</div><div class="stat-value">${fmt(aging.due5)}</div></div>
+      <div class="stat-card"><div class="stat-label">Due in 10 Days</div><div class="stat-value">${fmt(aging.due10)}</div></div>
+      <div class="stat-card" style="border-color:${aging.overdue>0?'#EFC9C3':'var(--line)'};">
+        <div class="stat-label">Total Overdue</div>
+        <div class="stat-value ${aging.overdue>0?'neg':''}">${fmt(aging.overdue)}</div>
+      </div>
     </div>
   </div>
 
   <div class="panel">
     <h3>RSM-wise Summary <span class="cnt">tap a row to expand towns</span></h3>
     <table class="responsive-table">
-      <thead><tr><th>RSM</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th class="num">Overdue</th><th>Achv.</th><th class="num">Reporting</th></tr></thead>
+      <thead><tr><th>RSM</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th class="num">Due 2d</th><th class="num">Due 5d</th><th class="num">Due 10d</th><th class="num">Overdue</th><th>Achv.</th><th class="num">Reporting</th></tr></thead>
       <tbody>
       ${rows.map(r=>{
         const rpct = achievementPct(r.plan,r.recv);
@@ -1018,6 +1085,9 @@ function renderNsmDaily(){
           <td class="num" data-label="Plan">${fmt(r.plan)}</td>
           <td class="num" data-label="Received">${fmt(r.recv)}</td>
           <td class="num ${r.recv-r.plan>=0?'pos':'neg'}" data-label="Variance">${fmt(r.recv-r.plan)}</td>
+          <td class="num" data-label="Due 2d">${fmt(r.due2)}</td>
+          <td class="num" data-label="Due 5d">${fmt(r.due5)}</td>
+          <td class="num" data-label="Due 10d">${fmt(r.due10)}</td>
           <td class="num ${r.overdue>0?'neg':''}" data-label="Overdue">${fmt(r.overdue)}</td>
           <td data-label="Achv."><div class="meter"><div class="meter-fill" style="width:${Math.min(rpct,100)}%;background:${meterColor(rpct)}"></div></div></td>
           <td class="num" data-label="Reporting">${r.reported}/${r.total}</td>
@@ -1031,20 +1101,23 @@ function renderExpandedTowns(rsmId){
   const towns = TOWN_DATA[rsmId].towns;
   const rec = state.nsmDailyRecords[rsmId];
   const overdueMap = state.nsmOverdueMap || {};
-  return `<tr class="expand-row"><td colspan="7" style="padding:0;">
+  return `<tr class="expand-row"><td colspan="10" style="padding:0;">
     <table class="responsive-table" style="margin:4px 0 8px;">
-      <thead><tr><th style="padding-left:26px;">Town</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th class="num">Overdue</th><th>Status</th></tr></thead>
+      <thead><tr><th style="padding-left:26px;">Town</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th class="num">Due 2d</th><th class="num">Due 5d</th><th class="num">Due 10d</th><th class="num">Overdue</th><th>Status</th></tr></thead>
       <tbody>
       ${towns.map(t=>{
         const tt=townTotals(rec,t);
-        const od = overdueMap[t] ? overdueMap[t].amount : 0;
+        const a = overdueMap[t] || {due2:0,due5:0,due10:0,amount:0};
         const status = tt.plan===0 && tt.entries.length===0 ? {l:'Not started',c:'gray'}
           : tt.entries.length===0 ? {l:'Plan set',c:'amber'}
           : tt.received>=tt.plan ? {l:'Achieved',c:'green'} : {l:'Reporting',c:'blue'};
         return `<tr><td data-label="Town" style="padding-left:26px;color:var(--muted);">${esc(t)}</td>
           <td class="num" data-label="Plan">${fmt(tt.plan)}</td><td class="num" data-label="Received">${fmt(tt.received)}</td>
           <td class="num ${tt.variance>=0?'pos':'neg'}" data-label="Variance">${fmt(tt.variance)}</td>
-          <td class="num ${od>0?'neg':''}" data-label="Overdue">${fmt(od)}</td>
+          <td class="num" data-label="Due 2d">${fmt(a.due2)}</td>
+          <td class="num" data-label="Due 5d">${fmt(a.due5)}</td>
+          <td class="num" data-label="Due 10d">${fmt(a.due10)}</td>
+          <td class="num ${a.amount>0?'neg':''}" data-label="Overdue">${fmt(a.amount)}</td>
           <td data-label="Status"><span class="badge badge-${status.c}">${status.l}</span></td></tr>`;
       }).join('')}
       </tbody>
