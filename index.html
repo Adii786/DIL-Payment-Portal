@@ -14,6 +14,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/mammoth/mammoth.browser.min.js"></script>
 <style>
   :root{
     --navy:#151515;
@@ -254,6 +255,11 @@ let state = {
   overdueMap:null,        // RSM view: {town: {amount, asOf}}
   nsmOverdueMap:null,     // NSM view: same, across all towns
   overdueUploadResult:null,
+  pastDueDocxResult:null,
+  adminUploadSubTab:'docx',
+  customerTownMapList:null,
+  lastDocxInvoiceRows:null,
+  lastDocxDate:null,
   overdueUploadDate:null, // admin Upload tab: which date is being edited
   overdueForDate:null     // admin Upload tab: exact values already saved for that date
 };
@@ -484,6 +490,150 @@ async function uploadOverdueBulk(text, date){
     if(error){ return {ok:false, error:error.message}; }
   }
   return {ok:true, matchedCount:matched.length, unmatched};
+}
+
+/* ---- Past Due Invoice Report (.docx) — direct upload, no manual conversion ----
+   Parses the exact ERP export format: "Customer Name: X   Customer Number: Y"
+   header lines, followed by invoice rows ending in Balance Due and Days Past Due.
+   Town is inferred from "(Town)" in the customer name, or a known-town suffix. */
+const CUSTOMER_LINE_RE = /^Customer Name:\s+(.+?)\s+Customer Number:\s+(\d+)\s*$/;
+const INVOICE_LINE_RE = /^(\d+)\s+(\S+)\s+(.*?)\s+(\d{2}-[A-Z]{3}-\d{2})\s+(\d{2}-[A-Z]{3}-\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+(-?\d+)\s*$/;
+
+function findTownFromCustomerName(customerName){
+  // Common spelling variants seen in ERP customer records vs. this app's
+  // canonical town list — extend as new variants show up in future uploads.
+  const TOWN_ALIASES = {
+    'takht bhai':'Takht Bahi', 'mian chunnu':'Mian Channu', 'mian chunno':'Mian Channu',
+    'wah cantt.':'Wah Cantt', 'wah cantonment':'Wah Cantt', 'd.g. khan':'Dera Ghazi Khan',
+    'd.i. khan':'DI Khan', 'dera ismail khan':'DI Khan', 'ahmedpur east':'Ahmedpur East',
+    'ahmed pur east':'Ahmedpur East', 'vihari':'Vehari', 'rawal pindi':'Rawalpindi',
+    'pak patan':'Pak Pattan', 'pak patan shrif':'Pak Pattan', 'kamoki':'Kamonki'
+  };
+  const stripped = customerName.trim().replace(/\.+$/,'').trim();
+  const parenMatch = stripped.match(/\(([^)]+)\)\s*$/);
+  if(parenMatch){
+    const cand = parenMatch[1].trim().toLowerCase();
+    if(TOWN_TO_RSM[cand]) return TOWN_TO_RSM[cand].town;
+    if(TOWN_ALIASES[cand]) return TOWN_ALIASES[cand];
+    return null; // parenthetical present but not a known town or alias — don't guess
+  }
+  const nameUpper = stripped.toUpperCase();
+  const knownTowns = Object.values(TOWN_TO_RSM).map(v=>v.town);
+  const sortedByLen = [...knownTowns].sort((a,b)=>b.length-a.length);
+  for(const t of sortedByLen){
+    if(nameUpper.endsWith(t.toUpperCase())) return t;
+  }
+  return null;
+}
+
+async function fetchCustomerTownMap(){
+  if(!sb) return {};
+  const {data, error} = await sb.from('customer_town_map').select('*');
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=> map[r.customer_name] = {town:r.town, rsmId:r.rsm_id});
+  return map;
+}
+async function saveCustomerTownMapping(customerName, town){
+  const hit = TOWN_TO_RSM[town.toLowerCase()];
+  if(!hit) return {ok:false, error:'Unrecognized town'};
+  const {error} = await sb.from('customer_town_map').upsert(
+    {customer_name:customerName, town:hit.town, rsm_id:hit.rsmId},
+    {onConflict:'customer_name'}
+  );
+  if(error) return {ok:false, error:error.message};
+  return {ok:true};
+}
+async function deleteCustomerTownMapping(customerName){
+  const {error} = await sb.from('customer_town_map').delete().eq('customer_name', customerName);
+  if(error) return {ok:false, error:error.message};
+  return {ok:true};
+}
+
+/* Resolves each invoice row's town — checking the manual assignment map
+   FIRST, falling back to the paren/alias/suffix guess only if unmapped —
+   then buckets and sums by town. Shared by the initial upload and by
+   re-processing after a manual assignment is saved. */
+function aggregateInvoiceRows(invoiceRows, customerTownMap){
+  const townTotals = {};
+  const unmatchedCustomers = {};
+  invoiceRows.forEach(r=>{
+    const mapped = customerTownMap[r.customer];
+    const town = (mapped && mapped.town) || findTownFromCustomerName(r.customer);
+    const bucket = r.days>=0 ? 'overdue' : (r.days>=-2 ? 'due2' : r.days>=-5 ? 'due5' : r.days>=-10 ? 'due10' : null);
+    if(bucket===null) return;
+    if(!town){ unmatchedCustomers[r.customer] = (unmatchedCustomers[r.customer]||0) + r.balance; return; }
+    if(!townTotals[town]) townTotals[town] = {due2:0, due5:0, due10:0, overdue:0};
+    townTotals[town][bucket] += r.balance;
+  });
+  return {townTotals, unmatchedCustomers};
+}
+
+async function parsePastDueDocx(file){
+  const arrayBuffer = await file.arrayBuffer();
+  const result = await mammoth.extractRawText({arrayBuffer});
+  const lines = result.value.split('\n').map(l=>l.replace(/\r$/,''));
+
+  let currentCustomer = null;
+  const customerOrder = [];
+  const seenCustomers = new Set();
+  const invoiceRows = [];        // {customer, days, balance}
+
+  lines.forEach(line=>{
+    if(!line.trim()) return;
+    const cm = CUSTOMER_LINE_RE.exec(line.trim());
+    if(cm){
+      currentCustomer = cm[1].trim();
+      if(!seenCustomers.has(currentCustomer)){ seenCustomers.add(currentCustomer); customerOrder.push(currentCustomer); }
+      return;
+    }
+    const im = INVOICE_LINE_RE.exec(line.trim());
+    if(im && currentCustomer){
+      const balanceDue = Number(im[8].replace(/,/g,''));
+      const daysPastDue = Number(im[9]);
+      invoiceRows.push({customer:currentCustomer, days:daysPastDue, balance:balanceDue});
+    }
+  });
+
+  return { invoiceRows, customerCount: customerOrder.length };
+}
+
+async function aggregateAndUpload(townTotals, unmatchedCustomers, date, extra){
+  const rows = Object.entries(townTotals).map(([town, b])=>{
+    const hit = TOWN_TO_RSM[town.toLowerCase()];
+    return {rsm_id:hit.rsmId, town:hit.town, as_of_date:date, due_2_days:b.due2, due_5_days:b.due5, due_10_days:b.due10, amount:b.overdue};
+  });
+  if(rows.length){
+    const {error} = await sb.from('overdue_amounts').upsert(rows, {onConflict:'town,as_of_date'});
+    if(error) return {ok:false, error:error.message};
+  }
+  const unmatchedList = Object.entries(unmatchedCustomers)
+    .sort((a,b)=>b[1]-a[1])
+    .map(([cust, bal])=>({customer:cust, balance:bal}));
+  return { ok:true, matchedCount: rows.length, unmatched: unmatchedList, ...extra };
+}
+
+async function uploadPastDueDocx(file, date){
+  const [parsed, customerTownMap] = await Promise.all([parsePastDueDocx(file), fetchCustomerTownMap()]);
+  state.lastDocxInvoiceRows = parsed.invoiceRows; // cached so a manual town assignment can re-aggregate without re-uploading
+  state.lastDocxDate = date;
+  const {townTotals, unmatchedCustomers} = aggregateInvoiceRows(parsed.invoiceRows, customerTownMap);
+  return await aggregateAndUpload(townTotals, unmatchedCustomers, date, {
+    customerCount: parsed.customerCount,
+    invoiceCount: parsed.invoiceRows.length
+  });
+}
+
+/* Re-runs aggregation on the last uploaded file's cached invoice rows, using
+   the current (just-updated) customer→town map — so assigning a town takes
+   effect immediately without re-uploading the .docx. */
+async function reprocessLastDocxUpload(){
+  if(!state.lastDocxInvoiceRows) return {ok:false, error:'No cached upload to reprocess — re-upload the .docx first.'};
+  const customerTownMap = await fetchCustomerTownMap();
+  const {townTotals, unmatchedCustomers} = aggregateInvoiceRows(state.lastDocxInvoiceRows, customerTownMap);
+  return await aggregateAndUpload(townTotals, unmatchedCustomers, state.lastDocxDate, {
+    invoiceCount: state.lastDocxInvoiceRows.length
+  });
 }
 
 function townTotals(rec, town){
@@ -829,6 +979,31 @@ async function handleOverdueUpload(){
   state.nsmOverdueMap = await fetchOverdueMap(null); // refresh the "latest" map used on dashboards
   render();
 }
+
+async function handlePastDueDocxUpload(file){
+  if(!file) return;
+  const date = state.overdueUploadDate || todayStr();
+  const statusEl = document.getElementById('docxUploadStatus');
+  statusEl.innerHTML = '<div class="loading">Reading and processing the report — this can take a few seconds for large files…</div>';
+  try{
+    const result = await uploadPastDueDocx(file, date);
+    if(!result.ok){ statusEl.innerHTML = `<div class="err">Upload failed: ${esc(result.error)}</div>`; return; }
+    state.pastDueDocxResult = result;
+    state.overdueForDate = await fetchOverdueForDate(date);
+    state.nsmOverdueMap = await fetchOverdueMap(null);
+    statusEl.innerHTML = '';
+    render();
+  }catch(e){
+    statusEl.innerHTML = `<div class="err">Could not process this file: ${esc(e.message||String(e))}. Make sure it's the unmodified .docx export from your ERP.</div>`;
+  }
+}
+function renderPastDueDocxResult(r, date){
+  return `
+  <div style="margin-top:12px;padding:12px 14px;border-radius:8px;background:${r.unmatched.length?'var(--amber-bg)':'var(--green-bg)'};font-size:12.5px;">
+    <b>${r.customerCount||''} ${r.customerCount?'customers, ':''}${r.invoiceCount} invoices processed</b> — ${r.matchedCount} town${r.matchedCount===1?'':'s'} updated for ${prettyDate(date)}.
+    ${r.unmatched.length ? `<div style="margin-top:6px;color:var(--amber);">${r.unmatched.length} customer(s) had no identifiable town — their balance isn't included in any town's total yet. <a href="#" onclick="setAdminUploadSubTab('customertowns');return false;" style="color:var(--amber);text-decoration:underline;">Assign towns for them now →</a></div>` : ''}
+  </div>`;
+}
 function changeOverdueDate(v){
   state.overdueUploadDate = v;
   state.overdueForDate = null;
@@ -843,14 +1018,55 @@ function renderOverdueUploadResult(r, date){
   </div>`;
 }
 
+function setAdminUploadSubTab(t){ state.adminUploadSubTab = t; render(); }
+
 function renderNsmUpload(){
+  const sub = state.adminUploadSubTab || 'docx';
+  return `
+  <div class="tabs" style="margin-bottom:18px;">
+    <button class="tab ${sub==='docx'?'active':''}" onclick="setAdminUploadSubTab('docx')">Past Due Report</button>
+    <button class="tab ${sub==='paste'?'active':''}" onclick="setAdminUploadSubTab('paste')">Manual Paste</button>
+    <button class="tab ${sub==='customertowns'?'active':''}" onclick="setAdminUploadSubTab('customertowns')">Customer → Town Map</button>
+  </div>
+  ${sub==='docx' ? renderDocxUploadTab() : sub==='paste' ? renderPasteUploadTab() : renderCustomerTownMapTab()}`;
+}
+
+function renderDocxUploadTab(){
+  const date = state.overdueUploadDate || todayStr();
+  const docxResult = state.pastDueDocxResult;
+  return `
+  <div class="panel">
+    <h3>Upload Past Due Report <span class="cnt">.docx — straight from your ERP export, no conversion needed</span></h3>
+    <div class="row-flex" style="margin-bottom:14px;">
+      <div class="field" style="max-width:220px;">
+        <label>Upload for date</label>
+        <input id="docxUploadDateInput" type="date" value="${date}" max="${todayStr()}" onchange="changeOverdueDate(this.value)">
+      </div>
+    </div>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
+      Upload the "Past Due Invoice Report" .docx exactly as exported from your ERP. Customer-level invoices are read automatically,
+      matched to a town (checking your manual Customer → Town assignments first, then guessing from the customer name), bucketed by
+      Days Past Due (2 / 5 / 10 days, or already overdue), and summed up town-wise.
+    </p>
+    <label class="upload-box" for="pastDueDocxInput">
+      <div style="font-size:28px;margin-bottom:8px;">⬆</div>
+      <div style="font-weight:600;">Click to choose the .docx report</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px;">Large reports (25+ pages) may take a few seconds to process.</div>
+      <input id="pastDueDocxInput" type="file" accept=".docx" onchange="handlePastDueDocxUpload(this.files[0])">
+    </label>
+    <div id="docxUploadStatus"></div>
+    ${docxResult ? renderPastDueDocxResult(docxResult, date) : ''}
+  </div>`;
+}
+
+function renderPasteUploadTab(){
   const date = state.overdueUploadDate || todayStr();
   const map = state.overdueForDate || {};
   const uploadedCount = Object.keys(map).length;
   const upResult = state.overdueUploadResult;
   return `
   <div class="panel">
-    <h3>Upload Town-wise Aging &amp; Overdue Balances</h3>
+    <h3>Paste Manually <span class="cnt">town-wise, if you already have it in this shape</span></h3>
     <div class="row-flex" style="margin-bottom:14px;">
       <div class="field" style="max-width:220px;">
         <label>Upload for date</label>
@@ -890,6 +1106,110 @@ Lahore, 0, 0, 0, 0" style="width:100%;padding:12px;border:1.5px solid var(--line
       </tbody>
     </table>
   </div>`;
+}
+
+function renderCustomerTownMapTab(){
+  const lastResult = state.pastDueDocxResult;
+  const needsAssignment = (lastResult && lastResult.unmatched) ? lastResult.unmatched : [];
+  const allMappings = state.customerTownMapList || [];
+  const allTownsOptions = ALL_TOWNS_OPTIONS_HTML();
+  return `
+  ${needsAssignment.length ? `
+  <div class="panel">
+    <h3>Needs Assignment <span class="cnt">from your last Past Due Report upload</span></h3>
+    <table class="responsive-table">
+      <thead><tr><th>Customer</th><th class="num">Flagged Balance</th><th>Assign to Town</th><th></th></tr></thead>
+      <tbody>
+      ${needsAssignment.map((u,i)=>`
+        <tr>
+          <td data-label="Customer">${esc(u.customer)}</td>
+          <td class="num" data-label="Flagged Balance">${fmt(u.balance)}</td>
+          <td data-label="Town">
+            <select id="assignTownSelect${i}">
+              <option value="">— choose town —</option>
+              ${allTownsOptions}
+            </select>
+          </td>
+          <td><button class="btn btn-primary btn-sm" onclick="handleAssignCustomerTown('${escJs(u.customer)}', document.getElementById('assignTownSelect${i}').value)">Assign &amp; Re-upload</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    <p class="footer-note" style="text-align:left;">Assigning a town here immediately re-aggregates and re-uploads the last report's figures using the new mapping — no need to re-upload the .docx.</p>
+  </div>` : ''}
+
+  <div class="panel">
+    <h3>Add a New Assignment</h3>
+    <div class="row-flex">
+      <div class="field">
+        <label>Customer Name (exact, as it appears in the ERP report)</label>
+        <input id="newMappingCustomer" placeholder="e.g. AHSAN TRADERS.">
+      </div>
+      <div class="field">
+        <label>Town</label>
+        <select id="newMappingTown">
+          <option value="">— choose town —</option>
+          ${allTownsOptions}
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="handleAddCustomerTownMapping()">Add</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>All Assignments <span class="cnt">${allMappings.length} saved</span></h3>
+    ${allMappings.length===0 ? '<div class="empty-note">No manual assignments saved yet.</div>' : `
+    <table class="responsive-table">
+      <thead><tr><th>Customer</th><th>Town</th><th>RSM</th><th></th></tr></thead>
+      <tbody>
+      ${allMappings.map(m=>`
+        <tr>
+          <td data-label="Customer">${esc(m.customer_name)}</td>
+          <td data-label="Town">${esc(m.town)}</td>
+          <td data-label="RSM">${esc(TOWN_DATA[m.rsm_id] ? TOWN_DATA[m.rsm_id].name : m.rsm_id)}</td>
+          <td><button class="entry-del" onclick="handleDeleteCustomerTownMapping('${escJs(m.customer_name)}')">remove</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`}
+  </div>`;
+}
+function ALL_TOWNS_OPTIONS_HTML(){
+  return RSM_IDS.map(id => TOWN_DATA[id].towns.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')).join('');
+}
+
+async function handleAssignCustomerTown(customerName, town){
+  if(!town){ alert('Choose a town first.'); return; }
+  const res = await saveCustomerTownMapping(customerName, town);
+  if(!res.ok){ alert('Could not save: '+res.error); return; }
+  const reprocessResult = await reprocessLastDocxUpload();
+  if(reprocessResult && reprocessResult.ok){
+    state.pastDueDocxResult = reprocessResult;
+    state.overdueForDate = await fetchOverdueForDate(state.lastDocxDate);
+    state.nsmOverdueMap = await fetchOverdueMap(null);
+  }
+  state.customerTownMapList = await fetchCustomerTownMapList();
+  render();
+}
+async function handleAddCustomerTownMapping(){
+  const customerName = document.getElementById('newMappingCustomer').value.trim();
+  const town = document.getElementById('newMappingTown').value;
+  if(!customerName || !town){ alert('Enter a customer name and choose a town.'); return; }
+  const res = await saveCustomerTownMapping(customerName, town);
+  if(!res.ok){ alert('Could not save: '+res.error); return; }
+  state.customerTownMapList = await fetchCustomerTownMapList();
+  render();
+}
+async function handleDeleteCustomerTownMapping(customerName){
+  if(!confirm(`Remove the town assignment for "${customerName}"?`)) return;
+  const res = await deleteCustomerTownMapping(customerName);
+  if(!res.ok){ alert('Could not remove: '+res.error); return; }
+  state.customerTownMapList = await fetchCustomerTownMapList();
+  render();
+}
+async function fetchCustomerTownMapList(){
+  if(!sb) return [];
+  const {data, error} = await sb.from('customer_town_map').select('*').order('customer_name');
+  if(error){ console.error(error); return []; }
+  return data||[];
 }
 
 function renderRsmReadonly(rec, label){
@@ -1008,6 +1328,7 @@ async function loadNsmView(){
   if(state.nsmView==='upload'){
     if(!state.overdueUploadDate) state.overdueUploadDate = todayStr();
     if(!state.overdueForDate) state.overdueForDate = await fetchOverdueForDate(state.overdueUploadDate);
+    if(!state.customerTownMapList) state.customerTownMapList = await fetchCustomerTownMapList();
     body.innerHTML = renderNsmUpload();
     return;
   }
