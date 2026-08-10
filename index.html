@@ -234,7 +234,7 @@ const USERS = {
   sajid:{password:'sajid2026', role:'rsm', rsmId:'sajid'},
   arif:{password:'arif2026', role:'rsm', rsmId:'arif'},
   nsm:{password:'nsm2026', role:'nsm'},
-  adnan:{password:'adnanadmin2026', role:'admin'}
+  adnan:{password:'adnan2026', role:'admin'}
 };
 
 /* ============================= STATE ============================= */
@@ -1318,7 +1318,7 @@ function stopNsmPolling(){
 }
 async function pollNsmBody(){
   if(!state.user || (state.user.role!=='nsm' && state.user.role!=='admin')) return;
-  if(state.nsmView==='upload') return; // no live polling needed on the upload tab
+  if(state.nsmView==='upload' || state.nsmView==='achievement' || state.nsmView==='tvaupload') return; // these tabs manage their own data — never let the daily/MTD poll overwrite them
   const body = document.getElementById('nsmBody');
   if(!body) return; // NSM screen not currently mounted
   state.nsmOverdueMap = await fetchOverdueMap(null); // always pick up the latest "as of" overdue upload
