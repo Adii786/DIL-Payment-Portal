@@ -234,7 +234,7 @@ const USERS = {
   sajid:{password:'sajid2026', role:'rsm', rsmId:'sajid'},
   arif:{password:'arif2026', role:'rsm', rsmId:'arif'},
   nsm:{password:'nsm2026', role:'nsm'},
-  adnan:{password:'adnan202678', role:'admin'}
+  adnan:{password:'adnan2026', role:'admin'}
 };
 
 /* ============================= STATE ============================= */
@@ -1535,7 +1535,7 @@ function refreshCurrentViewData(){
 document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') refreshCurrentViewData(); });
 window.addEventListener('pageshow', (e)=>{ if(e.persisted) refreshCurrentViewData(); });
 
-/* ============================= TARGET VS ACHIEVEMENT MODULE ============================= */
+/* ============================= TARGET VS ACHIEVEMENT MODULE (Quarterly) ============================= */
 let tvaCache = { hierarchy:null, prices:null };
 
 async function fetchProductHierarchyV2(){
@@ -1566,34 +1566,61 @@ async function fetchMonthlyTarget(month, town){
   (data||[]).forEach(r=> map[r.target_family] = (map[r.target_family]||0) + Number(r.target_qty||0));
   return map;
 }
-async function fetchAchievementQty(table, month, town){
+async function fetchAchievementQty(table, month, town, metric){
   if(!sb) return {};
-  const {data, error} = await sb.from(table).select('*').eq('month',month).eq('town',town);
+  let q = sb.from(table).select('*').eq('month',month).eq('town',town);
+  if(metric) q = q.eq('metric', metric);
+  const {data, error} = await q;
   if(error){ console.error(error); return {}; }
   const map = {};
   (data||[]).forEach(r=> map[r.sku_code] = (map[r.sku_code]||0) + Number(r.qty||0));
   return map;
 }
 
-const TVA_MONTH_OPTIONS = ['2026-07','2026-08','2026-09'];
+/* ---- Quarters: Jul-Sep = Q1, Oct-Dec = Q2, Jan-Mar = Q3, Apr-Jun = Q4 (fiscal year starting July) ---- */
+const QUARTER_MONTHS = {
+  '2026-Q1': ['2026-07','2026-08','2026-09'],
+  '2026-Q2': ['2026-10','2026-11','2026-12'],
+  '2027-Q3': ['2027-01','2027-02','2027-03'],
+  '2027-Q4': ['2027-04','2027-05','2027-06'],
+};
+const TVA_QUARTER_OPTIONS = Object.keys(QUARTER_MONTHS);
+const TVA_MONTH_OPTIONS = Object.values(QUARTER_MONTHS).flat(); // flat month list, for upload dropdowns (achievement/target stay monthly)
 function tvaMonthLabel(m){
   const [y,mo] = m.split('-');
   return new Date(Number(y), Number(mo)-1, 1).toLocaleDateString('en-GB',{month:'long', year:'numeric'});
 }
+function tvaQuarterLabel(q){
+  const months = QUARTER_MONTHS[q];
+  const label = m => new Date(Number(m.split('-')[0]), Number(m.split('-')[1])-1, 1).toLocaleDateString('en-GB',{month:'short'});
+  return `${label(months[0])}–${label(months[2])} ${months[0].split('-')[0]}`;
+}
+function tvaMonthShort(m){
+  const [y,mo] = m.split('-');
+  return new Date(Number(y), Number(mo)-1, 1).toLocaleDateString('en-GB',{month:'short', year:'2-digit'});
+}
 function tvaFmtQty(n){ n=Number(n)||0; return Math.round(n).toLocaleString('en-US'); }
 function tvaFmtRs(n){ n=Number(n)||0; return 'Rs '+Math.round(n).toLocaleString('en-US'); }
 
-/* Rolls up every HO family for one town/month: target, primary, secondary, total, deficit — qty and value. */
-async function computeHoFamilyRollup(month, town){
-  const [hierarchy, prices, targetMap, primaryMap, secondaryMap] = await Promise.all([
-    fetchProductHierarchyV2(), fetchHoFamilyPrices(),
-    fetchMonthlyTarget(month, town),
-    fetchAchievementQty('monthly_achievement_primary', month, town),
-    fetchAchievementQty('monthly_achievement_secondary', month, town)
-  ]);
+/* Rolls up every HO family for one town/quarter: quarter target, plus each
+   month's Primary Net Orders / Primary Net Sales / Secondary Net Sales,
+   and the two deficit columns (Net Sales only, per your confirmation). */
+async function computeQuarterlyRollup(quarter, town){
+  const months = QUARTER_MONTHS[quarter];
+  const [hierarchy, prices] = await Promise.all([fetchProductHierarchyV2(), fetchHoFamilyPrices()]);
 
-  // group SKUs by ho_family, track first target_family occurrence per ho_family to avoid
-  // double-counting when several ho_families share one target_family (same rule as the Excel build)
+  const targetMaps = {};
+  const ordersMaps = {}, salesMaps = {}, secMaps = {};
+  await Promise.all(months.map(async m=>{
+    const [t, o, s, sec] = await Promise.all([
+      fetchMonthlyTarget(m, town),
+      fetchAchievementQty('monthly_achievement_primary', m, town, 'orders'),
+      fetchAchievementQty('monthly_achievement_primary', m, town, 'sales'),
+      fetchAchievementQty('monthly_achievement_secondary', m, town)
+    ]);
+    targetMaps[m]=t; ordersMaps[m]=o; salesMaps[m]=s; secMaps[m]=sec;
+  }));
+
   const familyOrder = [];
   const skusByFamily = {};
   const seenFamily = new Set();
@@ -1607,31 +1634,46 @@ async function computeHoFamilyRollup(month, town){
     tfs.forEach(tf=>{ if(!(tf in firstFamilyForTargetFamily)) firstFamilyForTargetFamily[tf] = fam; });
   });
 
-  const rows = familyOrder.map(fam=>{
+  const rows = familyOrder.map((fam, idx)=>{
     const skus = skusByFamily[fam];
     const price = prices[fam] || 0;
-    let targetQty = 0;
-    const tfSeen = new Set();
-    skus.forEach(sku=>{
-      const tf = hierarchy[sku].target_family;
-      if(tfSeen.has(tf)) return;
-      tfSeen.add(tf);
-      if(firstFamilyForTargetFamily[tf] === fam) targetQty += (targetMap[tf]||0);
+
+    let quarterTarget = 0;
+    months.forEach(m=>{
+      const tfSeen = new Set();
+      skus.forEach(sku=>{
+        const tf = hierarchy[sku].target_family;
+        if(tfSeen.has(tf)) return;
+        tfSeen.add(tf);
+        if(firstFamilyForTargetFamily[tf] === fam) quarterTarget += (targetMaps[m][tf]||0);
+      });
     });
-    let primaryQty=0, secondaryQty=0;
-    skus.forEach(sku=>{
-      const uom = hierarchy[sku].uom || 1;
-      primaryQty += (primaryMap[sku]||0) / uom;
-      secondaryQty += (secondaryMap[sku]||0) / uom;
+
+    const monthData = months.map(m=>{
+      let orders=0, sales=0, sec=0;
+      skus.forEach(sku=>{
+        const uom = hierarchy[sku].uom || 1;
+        orders += (ordersMaps[m][sku]||0) / uom;
+        sales += (salesMaps[m][sku]||0) / uom;
+        sec += (secMaps[m][sku]||0) / uom;
+      });
+      return {month:m, orders, sales, sec};
     });
-    const totalQty = primaryQty + secondaryQty;
-    const targetValue = targetQty * price;
-    const primaryValue = primaryQty * price;
-    const secondaryValue = secondaryQty * price;
-    const totalValue = totalQty * price;
+
+    const totalSalesQty = monthData.reduce((s,md)=>s+md.sales,0);
+    const totalSecQty = monthData.reduce((s,md)=>s+md.sec,0);
+    const deficitPrimaryQty = totalSalesQty - quarterTarget;
+    const deficitSecondaryQty = totalSecQty - quarterTarget;
+
     return {
-      family:fam, targetQty, targetValue, primaryQty, primaryValue, secondaryQty, secondaryValue,
-      totalQty, totalValue, deficitQty: totalQty-targetQty, deficitValue: totalValue-targetValue
+      sr: idx+1, family: fam, price,
+      quarterTargetQty: quarterTarget, quarterTargetValue: quarterTarget*price,
+      months: monthData.map(md=>({
+        month: md.month, ordersQty: md.orders, ordersValue: md.orders*price,
+        salesQty: md.sales, salesValue: md.sales*price, secQty: md.sec, secValue: md.sec*price
+      })),
+      deficitPrimaryQty, deficitPrimaryValue: deficitPrimaryQty*price,
+      deficitSecondaryQty, deficitSecondaryValue: deficitSecondaryQty*price
     };
   });
   return rows;
@@ -1640,21 +1682,21 @@ async function computeHoFamilyRollup(month, town){
 /* ---- RSM view ---- */
 async function loadRsmAchievementView(){
   const body = document.getElementById('rsmBody');
-  if(!state.tvaMonth) state.tvaMonth = TVA_MONTH_OPTIONS[0];
+  if(!state.tvaQuarter) state.tvaQuarter = TVA_QUARTER_OPTIONS[0];
   const towns = TOWN_DATA[state.user.rsmId].towns;
   if(state.tvaSelectedTown){
-    if(!state.tvaRows) state.tvaRows = await computeHoFamilyRollup(state.tvaMonth, state.tvaSelectedTown);
-    body.innerHTML = renderTvaTownDetail(state.tvaSelectedTown, state.tvaRows, 'rsm');
+    if(!state.tvaRows) state.tvaRows = await computeQuarterlyRollup(state.tvaQuarter, state.tvaSelectedTown);
+    body.innerHTML = renderTvaTownDetail(state.tvaSelectedTown, state.tvaRows);
   } else {
     body.innerHTML = renderTvaTownGrid(towns);
   }
 }
-function renderTvaMonthSelector(){
+function renderTvaQuarterSelector(){
   return `<div class="row-flex" style="margin-bottom:14px;">
     <div class="field" style="max-width:220px;">
-      <label>Month</label>
-      <select onchange="tvaChangeMonth(this.value)">
-        ${TVA_MONTH_OPTIONS.map(m=>`<option value="${m}" ${state.tvaMonth===m?'selected':''}>${tvaMonthLabel(m)}</option>`).join('')}
+      <label>Quarter</label>
+      <select onchange="tvaChangeQuarter(this.value)">
+        ${TVA_QUARTER_OPTIONS.map(q=>`<option value="${q}" ${state.tvaQuarter===q?'selected':''}>${q} (${tvaQuarterLabel(q)})</option>`).join('')}
       </select>
     </div>
     <div class="field" style="max-width:160px;">
@@ -1666,7 +1708,7 @@ function renderTvaMonthSelector(){
     </div>
   </div>`;
 }
-function tvaChangeMonth(m){ state.tvaMonth=m; state.tvaRows=null; render(); }
+function tvaChangeQuarter(q){ state.tvaQuarter=q; state.tvaRows=null; render(); }
 function tvaChangeMode(m){ state.tvaMode=m; render(); }
 function tvaSelectTown(t){ state.tvaSelectedTown=t; state.tvaRows=null; render(); }
 function tvaBackToGrid(){ state.tvaSelectedTown=null; render(); }
@@ -1674,8 +1716,8 @@ function tvaBackToGrid(){ state.tvaSelectedTown=null; render(); }
 function renderTvaTownGrid(towns){
   return `
   <div class="panel">
-    ${renderTvaMonthSelector()}
-    <h3>Target vs Achievement <span class="cnt">${tvaMonthLabel(state.tvaMonth||TVA_MONTH_OPTIONS[0])} · tap a town</span></h3>
+    ${renderTvaQuarterSelector()}
+    <h3>Target vs Achievement <span class="cnt">${state.tvaQuarter||TVA_QUARTER_OPTIONS[0]} · tap a town</span></h3>
     <div class="town-grid">
       ${towns.map(t=>`<button class="town-card" onclick="tvaSelectTown('${escJs(t)}')">
         <span class="tc-name">${esc(t)}</span>
@@ -1684,80 +1726,118 @@ function renderTvaTownGrid(towns){
     </div>
   </div>`;
 }
-function renderTvaTownDetail(town, rows, role){
+
+function renderTvaTownDetail(town, rows){
   const isVal = state.tvaMode==='value';
   const fmt = isVal ? tvaFmtRs : tvaFmtQty;
-  const sorted = [...rows].sort((a,b)=> (isVal?a.deficitValue-b.deficitValue:a.deficitQty-b.deficitQty));
-  let totT=0, totP=0, totS=0, totTot=0, totDef=0;
+  const quarter = state.tvaQuarter;
+  const months = QUARTER_MONTHS[quarter];
+  const sorted = [...rows].sort((a,b)=> (isVal?a.deficitPrimaryValue-b.deficitPrimaryValue:a.deficitPrimaryQty-b.deficitPrimaryQty));
+
+  let totTarget=0, totDefP=0, totDefS=0;
+  const totMonth = months.map(()=>({orders:0,sales:0,sec:0}));
   sorted.forEach(r=>{
-    totT += isVal?r.targetValue:r.targetQty; totP += isVal?r.primaryValue:r.primaryQty;
-    totS += isVal?r.secondaryValue:r.secondaryQty; totTot += isVal?r.totalValue:r.totalQty;
-    totDef += isVal?r.deficitValue:r.deficitQty;
+    totTarget += isVal?r.quarterTargetValue:r.quarterTargetQty;
+    totDefP += isVal?r.deficitPrimaryValue:r.deficitPrimaryQty;
+    totDefS += isVal?r.deficitSecondaryValue:r.deficitSecondaryQty;
+    r.months.forEach((md,i)=>{
+      totMonth[i].orders += isVal?md.ordersValue:md.ordersQty;
+      totMonth[i].sales += isVal?md.salesValue:md.salesQty;
+      totMonth[i].sec += isVal?md.secValue:md.secQty;
+    });
   });
+
   return `
   <div class="entry-screen-header">
     <button class="back-btn" onclick="tvaBackToGrid()">←</button>
-    <h2>${esc(town)} — ${tvaMonthLabel(state.tvaMonth)}</h2>
+    <h2>${esc(town)} — ${quarter} (${tvaQuarterLabel(quarter)})</h2>
     <button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="tvaDownloadCsv('${escJs(town)}')">⬇ Download CSV</button>
   </div>
-  ${renderTvaMonthSelector()}
+  ${renderTvaQuarterSelector()}
   <div class="cards-row">
-    <div class="stat-card"><div class="stat-label">Target</div><div class="stat-value">${fmt(totT)}</div></div>
-    <div class="stat-card"><div class="stat-label">Primary</div><div class="stat-value">${fmt(totP)}</div></div>
-    <div class="stat-card"><div class="stat-label">Secondary</div><div class="stat-value">${fmt(totS)}</div></div>
-    <div class="stat-card"><div class="stat-label">Total (P+S)</div><div class="stat-value">${fmt(totTot)}</div></div>
-    <div class="stat-card" style="border-color:${totDef<0?'#EFC9C3':'var(--line)'};">
-      <div class="stat-label">Deficit</div><div class="stat-value ${totDef<0?'neg':'pos'}">${fmt(totDef)}</div>
-    </div>
+    <div class="stat-card"><div class="stat-label">Quarter Target</div><div class="stat-value">${fmt(totTarget)}</div></div>
+    ${months.map((m,i)=>`<div class="stat-card"><div class="stat-label">${tvaMonthShort(m)} Net Sales</div><div class="stat-value">${fmt(totMonth[i].sales)}</div></div>`).join('')}
+    <div class="stat-card" style="border-color:${totDefP<0?'#EFC9C3':'var(--line)'};"><div class="stat-label">Deficit — Primary</div><div class="stat-value ${totDefP<0?'neg':'pos'}">${fmt(totDefP)}</div></div>
+    <div class="stat-card" style="border-color:${totDefS<0?'#EFC9C3':'var(--line)'};"><div class="stat-label">Deficit — Secondary</div><div class="stat-value ${totDefS<0?'neg':'pos'}">${fmt(totDefS)}</div></div>
   </div>
   <div class="panel">
-    <h3>HO Family-wise <span class="cnt">${sorted.length} families · worst deficit first</span></h3>
+    <h3>HO Family-wise <span class="cnt">${sorted.length} families · worst primary deficit first · figures continue to show even for months not yet uploaded (as 0)</span></h3>
+    <div style="overflow-x:auto;">
     <table class="responsive-table">
-      <thead><tr><th>HO Family</th><th class="num">Target</th><th class="num">Primary</th><th class="num">Secondary</th><th class="num">Total</th><th class="num">Deficit</th></tr></thead>
+      <thead>
+        <tr>
+          <th rowspan="2" style="vertical-align:bottom;">SR#</th>
+          <th rowspan="2" style="vertical-align:bottom;">HO Family Name</th>
+          <th rowspan="2" style="vertical-align:bottom;" class="num">Quarter Target</th>
+          ${months.map(m=>`<th colspan="3" style="text-align:center;">${tvaMonthShort(m)}</th>`).join('')}
+          <th rowspan="2" style="vertical-align:bottom;" class="num">Deficit<br>Primary</th>
+          <th rowspan="2" style="vertical-align:bottom;" class="num">Deficit<br>Secondary</th>
+        </tr>
+        <tr>
+          ${months.map(()=>'<th class="num">Net Orders</th><th class="num">Net Sales</th><th class="num">Sec. Net Sales</th>').join('')}
+        </tr>
+      </thead>
       <tbody>
       ${sorted.map(r=>{
-        const t=isVal?r.targetValue:r.targetQty, p=isVal?r.primaryValue:r.primaryQty, s=isVal?r.secondaryValue:r.secondaryQty,
-              tot=isVal?r.totalValue:r.totalQty, def=isVal?r.deficitValue:r.deficitQty;
+        const target = isVal?r.quarterTargetValue:r.quarterTargetQty;
+        const defP = isVal?r.deficitPrimaryValue:r.deficitPrimaryQty;
+        const defS = isVal?r.deficitSecondaryValue:r.deficitSecondaryQty;
         return `<tr>
+          <td data-label="SR#">${r.sr}</td>
           <td data-label="HO Family">${esc(r.family)}</td>
-          <td class="num" data-label="Target">${fmt(t)}</td>
-          <td class="num" data-label="Primary">${fmt(p)}</td>
-          <td class="num" data-label="Secondary">${fmt(s)}</td>
-          <td class="num" data-label="Total">${fmt(tot)}</td>
-          <td class="num" data-label="Deficit" style="${def<0?'color:var(--red);font-weight:700;':''}">${fmt(def)}</td>
+          <td class="num" data-label="Quarter Target">${fmt(target)}</td>
+          ${r.months.map(md=>`
+            <td class="num" data-label="${tvaMonthShort(md.month)} Net Orders">${fmt(isVal?md.ordersValue:md.ordersQty)}</td>
+            <td class="num" data-label="${tvaMonthShort(md.month)} Net Sales">${fmt(isVal?md.salesValue:md.salesQty)}</td>
+            <td class="num" data-label="${tvaMonthShort(md.month)} Sec. Net Sales">${fmt(isVal?md.secValue:md.secQty)}</td>
+          `).join('')}
+          <td class="num" data-label="Deficit Primary" style="${defP<0?'color:var(--red);font-weight:700;':''}">${fmt(defP)}</td>
+          <td class="num" data-label="Deficit Secondary" style="${defS<0?'color:var(--red);font-weight:700;':''}">${fmt(defS)}</td>
         </tr>`;
       }).join('')}
       </tbody>
     </table>
+    </div>
   </div>`;
 }
+
 function tvaDownloadCsv(town){
   const rows = state.tvaRows;
   if(!rows) return;
-  let csv = 'HO Family,Target Qty,Target Value,Primary Qty,Primary Value,Secondary Qty,Secondary Value,Total Qty,Total Value,Deficit Qty,Deficit Value\n';
+  const quarter = state.tvaQuarter;
+  const months = QUARTER_MONTHS[quarter];
+  let header = 'SR#,HO Family,Quarter Target Qty,Quarter Target Value';
+  months.forEach(m=>{ header += `,${m} Net Orders Qty,${m} Net Orders Value,${m} Net Sales Qty,${m} Net Sales Value,${m} Sec Net Sales Qty,${m} Sec Net Sales Value`; });
+  header += ',Deficit Primary Qty,Deficit Primary Value,Deficit Secondary Qty,Deficit Secondary Value\n';
+  let csv = header;
   rows.forEach(r=>{
-    csv += `"${r.family}","${r.targetQty.toFixed(2)}","${r.targetValue.toFixed(2)}","${r.primaryQty.toFixed(2)}","${r.primaryValue.toFixed(2)}","${r.secondaryQty.toFixed(2)}","${r.secondaryValue.toFixed(2)}","${r.totalQty.toFixed(2)}","${r.totalValue.toFixed(2)}","${r.deficitQty.toFixed(2)}","${r.deficitValue.toFixed(2)}"\n`;
+    let line = `${r.sr},"${r.family}",${r.quarterTargetQty.toFixed(2)},${r.quarterTargetValue.toFixed(2)}`;
+    r.months.forEach(md=>{
+      line += `,${md.ordersQty.toFixed(2)},${md.ordersValue.toFixed(2)},${md.salesQty.toFixed(2)},${md.salesValue.toFixed(2)},${md.secQty.toFixed(2)},${md.secValue.toFixed(2)}`;
+    });
+    line += `,${r.deficitPrimaryQty.toFixed(2)},${r.deficitPrimaryValue.toFixed(2)},${r.deficitSecondaryQty.toFixed(2)},${r.deficitSecondaryValue.toFixed(2)}\n`;
+    csv += line;
   });
   const blob = new Blob([csv], {type:'text/csv'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = `${town.replace(/\s+/g,'_')}_${state.tvaMonth}_target_vs_achievement.csv`;
+  a.href = url; a.download = `${town.replace(/\s+/g,'_')}_${quarter}_target_vs_achievement.csv`;
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
 }
 
-/* ---- NSM view: RSM-wise summary -> town grid -> town detail (reuses renderTvaTownDetail) ---- */
+/* ---- NSM view: RSM-wise -> town grid -> town detail (reuses renderTvaTownDetail) ---- */
 async function loadNsmAchievementView(){
   const body = document.getElementById('nsmBody');
-  if(!state.tvaMonth) state.tvaMonth = TVA_MONTH_OPTIONS[0];
+  if(!state.tvaQuarter) state.tvaQuarter = TVA_QUARTER_OPTIONS[0];
   if(state.tvaSelectedTown){
-    if(!state.tvaRows) state.tvaRows = await computeHoFamilyRollup(state.tvaMonth, state.tvaSelectedTown);
-    body.innerHTML = renderTvaTownDetail(state.tvaSelectedTown, state.tvaRows, 'nsm');
+    if(!state.tvaRows) state.tvaRows = await computeQuarterlyRollup(state.tvaQuarter, state.tvaSelectedTown);
+    body.innerHTML = renderTvaTownDetail(state.tvaSelectedTown, state.tvaRows);
   } else if(state.tvaExpandedRsm){
     body.innerHTML = `<div class="entry-screen-header"><button class="back-btn" onclick="tvaBackToRsmList()">←</button><h2>${esc(TOWN_DATA[state.tvaExpandedRsm].name)}</h2></div>`
       + renderTvaTownGrid(TOWN_DATA[state.tvaExpandedRsm].towns);
   } else {
-    body.innerHTML = `<div class="panel">${renderTvaMonthSelector()}
+    body.innerHTML = `<div class="panel">${renderTvaQuarterSelector()}
       <h3>Target vs Achievement — by RSM <span class="cnt">tap to drill into towns</span></h3>
       <div class="town-grid">
         ${RSM_IDS.map(id=>`<button class="town-card" onclick="tvaDrillRsm('${id}')">
@@ -1769,6 +1849,7 @@ async function loadNsmAchievementView(){
 }
 function tvaDrillRsm(id){ state.tvaExpandedRsm=id; render(); }
 function tvaBackToRsmList(){ state.tvaExpandedRsm=null; state.tvaSelectedTown=null; render(); }
+
 
 /* ============================= ADMIN: T v A UPLOAD ============================= */
 function setTvaUploadSubTab(t){ state.tvaUploadSubTab=t; state.tvaUploadResult=null; render(); }
@@ -1908,7 +1989,7 @@ function renderTvaUploadResultBox(r){
 /* ---- Primary / Secondary achievement: full workbook file upload (matches your ERP matrix export) ---- */
 function renderTvaAchievementFilePanel(kind){
   const result = state.tvaUploadResult;
-  const label = kind==='primary' ? 'Primary (Net Sales / Orders)' : 'Secondary (Sell-out)';
+  const label = kind==='primary' ? 'Primary (Net Orders / Net Sales)' : 'Secondary (Sell-out)';
   return `
   <div class="panel">
     <h3>Upload ${label} Achievement</h3>
@@ -1917,9 +1998,18 @@ function renderTvaAchievementFilePanel(kind){
         <label>Month</label>
         <select id="tvaAch${kind}Month">${TVA_MONTH_OPTIONS.map(m=>`<option value="${m}">${tvaMonthLabel(m)}</option>`).join('')}</select>
       </div>
+      ${kind==='primary' ? `
+      <div class="field" style="max-width:200px;">
+        <label>Metric</label>
+        <select id="tvaAchPrimaryMetric">
+          <option value="orders">Net Orders</option>
+          <option value="sales">Net Sales</option>
+        </select>
+      </div>` : ''}
     </div>
     <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
       Upload the matrix-format workbook exactly as exported (SKU rows, town columns). Matches town names against this portal's town list automatically.
+      ${kind==='primary' ? ' Since Net Orders and Net Sales are now tracked separately every month, upload each one with the matching Metric selected above — uploading Net Orders won\'t overwrite that month\'s Net Sales, and vice versa.' : ''}
     </p>
     <label class="upload-box" for="tvaFile${kind}">
       <div style="font-size:28px;margin-bottom:8px;">⬆</div>
@@ -1941,6 +2031,7 @@ function tvaFindTownFromHeader(h){
 async function handleTvaAchievementUpload(file, kind){
   if(!file) return;
   const month = document.getElementById(`tvaAch${kind}Month`).value;
+  const metric = kind==='primary' ? document.getElementById('tvaAchPrimaryMetric').value : null;
   const statusEl = document.getElementById(`tvaAchStatus${kind}`);
   statusEl.innerHTML = '<div class="loading">Processing workbook…</div>';
   try{
@@ -1961,18 +2052,15 @@ async function handleTvaAchievementUpload(file, kind){
         const sku = String(row[0]).trim().padStart(9,'0');
         Object.entries(townCols).forEach(([c,town])=>{
           const v = row[c];
-          if(v!=null && v!==0) rows.push({month, town, sku_code:sku, qty:Number(v)});
+          if(v!=null && v!==0) rows.push({month, town, sku_code:sku, qty:Number(v), metric});
         });
       }
     } else {
       // Secondary format: row1 (idx0) = merged town names every 3 cols; row2 (idx1) = sub-headers incl 'Pcs'
       const townRow = grid[0] || [];
       const subRow = grid[1] || [];
-      let currentTown = null;
-      const pcsCols = {};
-      townRow.forEach((h,c)=>{ if(c>=2 && h && !String(h).toLowerCase().includes('total sum')) currentTown = tvaFindTownFromHeader(h) || String(h).trim(); if(c>=2 && currentTown){ /* remember mapping lazily below */ } });
-      // second pass using subRow to find Pcs columns, mapping back to the town active at that column
       let activeTown = null;
+      const pcsCols = {};
       for(let c=0; c<townRow.length; c++){
         if(c<2) continue;
         if(townRow[c] && !String(townRow[c]).toLowerCase().includes('total sum')){
@@ -1994,10 +2082,11 @@ async function handleTvaAchievementUpload(file, kind){
     }
 
     const table = kind==='primary' ? 'monthly_achievement_primary' : 'monthly_achievement_secondary';
+    const conflictKey = kind==='primary' ? 'month,town,sku_code,metric' : 'month,town,sku_code';
     const chunkSize = 1000;
     for(let i=0;i<rows.length;i+=chunkSize){
       const chunk = rows.slice(i,i+chunkSize);
-      const {error} = await sb.from(table).upsert(chunk, {onConflict:'month,town,sku_code'});
+      const {error} = await sb.from(table).upsert(chunk, {onConflict:conflictKey});
       if(error){ statusEl.innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
     }
     state.tvaUploadResult = {kind, ok:true, count:rows.length, unmatched: Array.from(unmatchedTowns)};
