@@ -15,6 +15,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth/mammoth.browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{
     --navy:#151515;
@@ -256,6 +257,8 @@ let state = {
   nsmOverdueMap:null,     // NSM view: same, across all towns
   overdueUploadResult:null,
   pastDueDocxResult:null,
+  tvaMonth:null, tvaMode:'volume', tvaSelectedTown:null, tvaRows:null, tvaExpandedRsm:null,
+  tvaUploadSubTab:'price', tvaUploadResult:null, tvaPriceList:null,
   adminUploadSubTab:'docx',
   customerTownMapList:null,
   lastDocxInvoiceRows:null,
@@ -748,6 +751,7 @@ function renderRsmShell(){
       <button class="tab ${state.rsmView==='today'?'active':''}" onclick="setRsmView('today')">Today</button>
       <button class="tab ${state.rsmView==='yesterday'?'active':''}" onclick="setRsmView('yesterday')">Yesterday</button>
       <button class="tab ${state.rsmView==='mtd'?'active':''}" onclick="setRsmView('mtd')">MTD Report</button>
+      <button class="tab ${state.rsmView==='achievement'?'active':''}" onclick="setRsmView('achievement')">Target vs Achievement</button>
     </div>
     <div id="rsmBody"><div class="loading">Loading…</div></div>
   </div>
@@ -756,6 +760,7 @@ function renderRsmShell(){
       <button class="bottom-nav-item ${state.rsmView==='today'?'active':''}" onclick="setRsmView('today')"><span class="ic">●</span>Today</button>
       <button class="bottom-nav-item ${state.rsmView==='yesterday'?'active':''}" onclick="setRsmView('yesterday')"><span class="ic">◐</span>Yesterday</button>
       <button class="bottom-nav-item ${state.rsmView==='mtd'?'active':''}" onclick="setRsmView('mtd')"><span class="ic">▤</span>MTD</button>
+      <button class="bottom-nav-item ${state.rsmView==='achievement'?'active':''}" onclick="setRsmView('achievement')"><span class="ic">◈</span>T v A</button>
     </div>
   </div>`;
 }
@@ -772,6 +777,8 @@ async function loadRsmView(){
   } else if(state.rsmView==='yesterday'){
     if(!state.yesterdayRecord) state.yesterdayRecord = await getRecord(rsmId, todayStr(-1));
     body.innerHTML = renderRsmReadonly(state.yesterdayRecord, 'Yesterday · '+prettyDate(todayStr(-1)));
+  } else if(state.rsmView==='achievement'){
+    await loadRsmAchievementView();
   } else {
     if(!state.mtdData) state.mtdData = await buildRsmMtd(rsmId);
     body.innerHTML = renderRsmMtd();
@@ -1281,7 +1288,9 @@ function renderNsmShell(){
     <div class="tabs desktop-tabs">
       <button class="tab ${state.nsmView==='daily'?'active':''}" onclick="setNsmView('daily')">Daily Dashboard</button>
       <button class="tab ${state.nsmView==='mtd'?'active':''}" onclick="setNsmView('mtd')">MTD Dashboard</button>
+      <button class="tab ${state.nsmView==='achievement'?'active':''}" onclick="setNsmView('achievement')">Target vs Achievement</button>
       ${isAdmin ? `<button class="tab ${state.nsmView==='upload'?'active':''}" onclick="setNsmView('upload')">Upload Overdue</button>` : ''}
+      ${isAdmin ? `<button class="tab ${state.nsmView==='tvaupload'?'active':''}" onclick="setNsmView('tvaupload')">T v A Upload</button>` : ''}
     </div>
     <div id="nsmBody"><div class="loading">Loading…</div></div>
   </div>
@@ -1289,7 +1298,9 @@ function renderNsmShell(){
     <div class="bottom-nav-row">
       <button class="bottom-nav-item ${state.nsmView==='daily'?'active':''}" onclick="setNsmView('daily')"><span class="ic">●</span>Daily</button>
       <button class="bottom-nav-item ${state.nsmView==='mtd'?'active':''}" onclick="setNsmView('mtd')"><span class="ic">▤</span>MTD</button>
+      <button class="bottom-nav-item ${state.nsmView==='achievement'?'active':''}" onclick="setNsmView('achievement')"><span class="ic">◈</span>T v A</button>
       ${isAdmin ? `<button class="bottom-nav-item ${state.nsmView==='upload'?'active':''}" onclick="setNsmView('upload')"><span class="ic">⬆</span>Upload</button>` : ''}
+      ${isAdmin ? `<button class="bottom-nav-item ${state.nsmView==='tvaupload'?'active':''}" onclick="setNsmView('tvaupload')"><span class="ic">⬆</span>T v A</button>` : ''}
     </div>
   </div>`;
 }
@@ -1330,6 +1341,14 @@ async function loadNsmView(){
     if(!state.overdueForDate) state.overdueForDate = await fetchOverdueForDate(state.overdueUploadDate);
     if(!state.customerTownMapList) state.customerTownMapList = await fetchCustomerTownMapList();
     body.innerHTML = renderNsmUpload();
+    return;
+  }
+  if(state.nsmView==='achievement'){
+    await loadNsmAchievementView();
+    return;
+  }
+  if(state.nsmView==='tvaupload'){
+    await loadTvaUploadView();
     return;
   }
   if(!state.nsmOverdueMap) state.nsmOverdueMap = await fetchOverdueMap(null);
@@ -1515,6 +1534,479 @@ function refreshCurrentViewData(){
 }
 document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') refreshCurrentViewData(); });
 window.addEventListener('pageshow', (e)=>{ if(e.persisted) refreshCurrentViewData(); });
+
+/* ============================= TARGET VS ACHIEVEMENT MODULE ============================= */
+let tvaCache = { hierarchy:null, prices:null };
+
+async function fetchProductHierarchyV2(){
+  if(tvaCache.hierarchy) return tvaCache.hierarchy;
+  if(!sb) return {};
+  const {data, error} = await sb.from('product_hierarchy_v2').select('*');
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=> map[r.sku_code] = {sku_name:r.sku_name, ho_family:r.ho_family, target_family:r.target_family, uom:Number(r.uom)||1});
+  tvaCache.hierarchy = map;
+  return map;
+}
+async function fetchHoFamilyPrices(force){
+  if(tvaCache.prices && !force) return tvaCache.prices;
+  if(!sb) return {};
+  const {data, error} = await sb.from('ho_family_price').select('*');
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=> map[r.ho_family] = Number(r.price)||0);
+  tvaCache.prices = map;
+  return map;
+}
+async function fetchMonthlyTarget(month, town){
+  if(!sb) return {};
+  const {data, error} = await sb.from('monthly_target').select('*').eq('month',month).eq('town',town);
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=> map[r.target_family] = (map[r.target_family]||0) + Number(r.target_qty||0));
+  return map;
+}
+async function fetchAchievementQty(table, month, town){
+  if(!sb) return {};
+  const {data, error} = await sb.from(table).select('*').eq('month',month).eq('town',town);
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=> map[r.sku_code] = (map[r.sku_code]||0) + Number(r.qty||0));
+  return map;
+}
+
+const TVA_MONTH_OPTIONS = ['2026-07','2026-08','2026-09'];
+function tvaMonthLabel(m){
+  const [y,mo] = m.split('-');
+  return new Date(Number(y), Number(mo)-1, 1).toLocaleDateString('en-GB',{month:'long', year:'numeric'});
+}
+function tvaFmtQty(n){ n=Number(n)||0; return Math.round(n).toLocaleString('en-US'); }
+function tvaFmtRs(n){ n=Number(n)||0; return 'Rs '+Math.round(n).toLocaleString('en-US'); }
+
+/* Rolls up every HO family for one town/month: target, primary, secondary, total, deficit — qty and value. */
+async function computeHoFamilyRollup(month, town){
+  const [hierarchy, prices, targetMap, primaryMap, secondaryMap] = await Promise.all([
+    fetchProductHierarchyV2(), fetchHoFamilyPrices(),
+    fetchMonthlyTarget(month, town),
+    fetchAchievementQty('monthly_achievement_primary', month, town),
+    fetchAchievementQty('monthly_achievement_secondary', month, town)
+  ]);
+
+  // group SKUs by ho_family, track first target_family occurrence per ho_family to avoid
+  // double-counting when several ho_families share one target_family (same rule as the Excel build)
+  const familyOrder = [];
+  const skusByFamily = {};
+  const seenFamily = new Set();
+  Object.entries(hierarchy).forEach(([sku, meta])=>{
+    if(!seenFamily.has(meta.ho_family)){ seenFamily.add(meta.ho_family); familyOrder.push(meta.ho_family); }
+    (skusByFamily[meta.ho_family] = skusByFamily[meta.ho_family]||[]).push(sku);
+  });
+  const firstFamilyForTargetFamily = {};
+  familyOrder.forEach(fam=>{
+    const tfs = new Set(skusByFamily[fam].map(sku=>hierarchy[sku].target_family));
+    tfs.forEach(tf=>{ if(!(tf in firstFamilyForTargetFamily)) firstFamilyForTargetFamily[tf] = fam; });
+  });
+
+  const rows = familyOrder.map(fam=>{
+    const skus = skusByFamily[fam];
+    const price = prices[fam] || 0;
+    let targetQty = 0;
+    const tfSeen = new Set();
+    skus.forEach(sku=>{
+      const tf = hierarchy[sku].target_family;
+      if(tfSeen.has(tf)) return;
+      tfSeen.add(tf);
+      if(firstFamilyForTargetFamily[tf] === fam) targetQty += (targetMap[tf]||0);
+    });
+    let primaryQty=0, secondaryQty=0;
+    skus.forEach(sku=>{
+      const uom = hierarchy[sku].uom || 1;
+      primaryQty += (primaryMap[sku]||0) / uom;
+      secondaryQty += (secondaryMap[sku]||0) / uom;
+    });
+    const totalQty = primaryQty + secondaryQty;
+    const targetValue = targetQty * price;
+    const primaryValue = primaryQty * price;
+    const secondaryValue = secondaryQty * price;
+    const totalValue = totalQty * price;
+    return {
+      family:fam, targetQty, targetValue, primaryQty, primaryValue, secondaryQty, secondaryValue,
+      totalQty, totalValue, deficitQty: totalQty-targetQty, deficitValue: totalValue-targetValue
+    };
+  });
+  return rows;
+}
+
+/* ---- RSM view ---- */
+async function loadRsmAchievementView(){
+  const body = document.getElementById('rsmBody');
+  if(!state.tvaMonth) state.tvaMonth = TVA_MONTH_OPTIONS[0];
+  const towns = TOWN_DATA[state.user.rsmId].towns;
+  if(state.tvaSelectedTown){
+    if(!state.tvaRows) state.tvaRows = await computeHoFamilyRollup(state.tvaMonth, state.tvaSelectedTown);
+    body.innerHTML = renderTvaTownDetail(state.tvaSelectedTown, state.tvaRows, 'rsm');
+  } else {
+    body.innerHTML = renderTvaTownGrid(towns);
+  }
+}
+function renderTvaMonthSelector(){
+  return `<div class="row-flex" style="margin-bottom:14px;">
+    <div class="field" style="max-width:220px;">
+      <label>Month</label>
+      <select onchange="tvaChangeMonth(this.value)">
+        ${TVA_MONTH_OPTIONS.map(m=>`<option value="${m}" ${state.tvaMonth===m?'selected':''}>${tvaMonthLabel(m)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field" style="max-width:160px;">
+      <label>View</label>
+      <select onchange="tvaChangeMode(this.value)">
+        <option value="volume" ${state.tvaMode!=='value'?'selected':''}>Volume</option>
+        <option value="value" ${state.tvaMode==='value'?'selected':''}>Value</option>
+      </select>
+    </div>
+  </div>`;
+}
+function tvaChangeMonth(m){ state.tvaMonth=m; state.tvaRows=null; render(); }
+function tvaChangeMode(m){ state.tvaMode=m; render(); }
+function tvaSelectTown(t){ state.tvaSelectedTown=t; state.tvaRows=null; render(); }
+function tvaBackToGrid(){ state.tvaSelectedTown=null; render(); }
+
+function renderTvaTownGrid(towns){
+  return `
+  <div class="panel">
+    ${renderTvaMonthSelector()}
+    <h3>Target vs Achievement <span class="cnt">${tvaMonthLabel(state.tvaMonth||TVA_MONTH_OPTIONS[0])} · tap a town</span></h3>
+    <div class="town-grid">
+      ${towns.map(t=>`<button class="town-card" onclick="tvaSelectTown('${escJs(t)}')">
+        <span class="tc-name">${esc(t)}</span>
+        <span class="tc-nums"><span>Tap to view HO family detail</span></span>
+      </button>`).join('')}
+    </div>
+  </div>`;
+}
+function renderTvaTownDetail(town, rows, role){
+  const isVal = state.tvaMode==='value';
+  const fmt = isVal ? tvaFmtRs : tvaFmtQty;
+  const sorted = [...rows].sort((a,b)=> (isVal?a.deficitValue-b.deficitValue:a.deficitQty-b.deficitQty));
+  let totT=0, totP=0, totS=0, totTot=0, totDef=0;
+  sorted.forEach(r=>{
+    totT += isVal?r.targetValue:r.targetQty; totP += isVal?r.primaryValue:r.primaryQty;
+    totS += isVal?r.secondaryValue:r.secondaryQty; totTot += isVal?r.totalValue:r.totalQty;
+    totDef += isVal?r.deficitValue:r.deficitQty;
+  });
+  return `
+  <div class="entry-screen-header">
+    <button class="back-btn" onclick="tvaBackToGrid()">←</button>
+    <h2>${esc(town)} — ${tvaMonthLabel(state.tvaMonth)}</h2>
+    <button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="tvaDownloadCsv('${escJs(town)}')">⬇ Download CSV</button>
+  </div>
+  ${renderTvaMonthSelector()}
+  <div class="cards-row">
+    <div class="stat-card"><div class="stat-label">Target</div><div class="stat-value">${fmt(totT)}</div></div>
+    <div class="stat-card"><div class="stat-label">Primary</div><div class="stat-value">${fmt(totP)}</div></div>
+    <div class="stat-card"><div class="stat-label">Secondary</div><div class="stat-value">${fmt(totS)}</div></div>
+    <div class="stat-card"><div class="stat-label">Total (P+S)</div><div class="stat-value">${fmt(totTot)}</div></div>
+    <div class="stat-card" style="border-color:${totDef<0?'#EFC9C3':'var(--line)'};">
+      <div class="stat-label">Deficit</div><div class="stat-value ${totDef<0?'neg':'pos'}">${fmt(totDef)}</div>
+    </div>
+  </div>
+  <div class="panel">
+    <h3>HO Family-wise <span class="cnt">${sorted.length} families · worst deficit first</span></h3>
+    <table class="responsive-table">
+      <thead><tr><th>HO Family</th><th class="num">Target</th><th class="num">Primary</th><th class="num">Secondary</th><th class="num">Total</th><th class="num">Deficit</th></tr></thead>
+      <tbody>
+      ${sorted.map(r=>{
+        const t=isVal?r.targetValue:r.targetQty, p=isVal?r.primaryValue:r.primaryQty, s=isVal?r.secondaryValue:r.secondaryQty,
+              tot=isVal?r.totalValue:r.totalQty, def=isVal?r.deficitValue:r.deficitQty;
+        return `<tr>
+          <td data-label="HO Family">${esc(r.family)}</td>
+          <td class="num" data-label="Target">${fmt(t)}</td>
+          <td class="num" data-label="Primary">${fmt(p)}</td>
+          <td class="num" data-label="Secondary">${fmt(s)}</td>
+          <td class="num" data-label="Total">${fmt(tot)}</td>
+          <td class="num" data-label="Deficit" style="${def<0?'color:var(--red);font-weight:700;':''}">${fmt(def)}</td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+function tvaDownloadCsv(town){
+  const rows = state.tvaRows;
+  if(!rows) return;
+  let csv = 'HO Family,Target Qty,Target Value,Primary Qty,Primary Value,Secondary Qty,Secondary Value,Total Qty,Total Value,Deficit Qty,Deficit Value\n';
+  rows.forEach(r=>{
+    csv += `"${r.family}","${r.targetQty.toFixed(2)}","${r.targetValue.toFixed(2)}","${r.primaryQty.toFixed(2)}","${r.primaryValue.toFixed(2)}","${r.secondaryQty.toFixed(2)}","${r.secondaryValue.toFixed(2)}","${r.totalQty.toFixed(2)}","${r.totalValue.toFixed(2)}","${r.deficitQty.toFixed(2)}","${r.deficitValue.toFixed(2)}"\n`;
+  });
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `${town.replace(/\s+/g,'_')}_${state.tvaMonth}_target_vs_achievement.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* ---- NSM view: RSM-wise summary -> town grid -> town detail (reuses renderTvaTownDetail) ---- */
+async function loadNsmAchievementView(){
+  const body = document.getElementById('nsmBody');
+  if(!state.tvaMonth) state.tvaMonth = TVA_MONTH_OPTIONS[0];
+  if(state.tvaSelectedTown){
+    if(!state.tvaRows) state.tvaRows = await computeHoFamilyRollup(state.tvaMonth, state.tvaSelectedTown);
+    body.innerHTML = renderTvaTownDetail(state.tvaSelectedTown, state.tvaRows, 'nsm');
+  } else if(state.tvaExpandedRsm){
+    body.innerHTML = `<div class="entry-screen-header"><button class="back-btn" onclick="tvaBackToRsmList()">←</button><h2>${esc(TOWN_DATA[state.tvaExpandedRsm].name)}</h2></div>`
+      + renderTvaTownGrid(TOWN_DATA[state.tvaExpandedRsm].towns);
+  } else {
+    body.innerHTML = `<div class="panel">${renderTvaMonthSelector()}
+      <h3>Target vs Achievement — by RSM <span class="cnt">tap to drill into towns</span></h3>
+      <div class="town-grid">
+        ${RSM_IDS.map(id=>`<button class="town-card" onclick="tvaDrillRsm('${id}')">
+          <span class="tc-name">${esc(TOWN_DATA[id].name)}</span>
+          <span class="tc-nums"><span>${TOWN_DATA[id].towns.length} towns</span></span>
+        </button>`).join('')}
+      </div></div>`;
+  }
+}
+function tvaDrillRsm(id){ state.tvaExpandedRsm=id; render(); }
+function tvaBackToRsmList(){ state.tvaExpandedRsm=null; state.tvaSelectedTown=null; render(); }
+
+/* ============================= ADMIN: T v A UPLOAD ============================= */
+function setTvaUploadSubTab(t){ state.tvaUploadSubTab=t; state.tvaUploadResult=null; render(); }
+async function loadTvaUploadView(){
+  const body = document.getElementById('nsmBody');
+  if(!state.tvaPriceList) state.tvaPriceList = await fetchHoFamilyPriceList();
+  body.innerHTML = renderTvaUploadPanel();
+}
+async function fetchHoFamilyPriceList(){
+  if(!sb) return [];
+  const {data, error} = await sb.from('ho_family_price').select('*').order('ho_family');
+  if(error){ console.error(error); return []; }
+  return data||[];
+}
+function renderTvaUploadPanel(){
+  const sub = state.tvaUploadSubTab || 'price';
+  return `
+  <div class="tabs" style="margin-bottom:18px;">
+    <button class="tab ${sub==='price'?'active':''}" onclick="setTvaUploadSubTab('price')">Price Config</button>
+    <button class="tab ${sub==='target'?'active':''}" onclick="setTvaUploadSubTab('target')">Target Upload</button>
+    <button class="tab ${sub==='primary'?'active':''}" onclick="setTvaUploadSubTab('primary')">Primary Achievement</button>
+    <button class="tab ${sub==='secondary'?'active':''}" onclick="setTvaUploadSubTab('secondary')">Secondary Achievement</button>
+  </div>
+  ${sub==='price' ? renderTvaPricePanel() : sub==='target' ? renderTvaTargetPanel() : sub==='primary' ? renderTvaAchievementFilePanel('primary') : renderTvaAchievementFilePanel('secondary')}`;
+}
+
+function renderTvaPricePanel(){
+  const list = state.tvaPriceList || [];
+  return `
+  <div class="panel">
+    <h3>HO Family Price Configuration <span class="cnt">${list.length} families · applies to all past &amp; future months instantly</span></h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Changing a price here immediately changes every Target/Primary/Secondary Value figure for this family, in every month — value is always calculated live from qty × current price, never stored.</p>
+    <table class="responsive-table">
+      <thead><tr><th>HO Family</th><th class="num">Price (per unit)</th><th></th></tr></thead>
+      <tbody>
+      ${list.map((r,i)=>`<tr>
+        <td data-label="HO Family">${esc(r.ho_family)}</td>
+        <td class="num" data-label="Price"><input id="priceInput${i}" type="number" step="0.01" value="${r.price}" style="width:110px;text-align:right;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
+        <td><button class="btn btn-primary btn-sm" onclick="handleSavePrice('${escJs(r.ho_family)}', document.getElementById('priceInput${i}').value)">Save</button></td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>
+  <div class="panel">
+    <h3>Bulk Update</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Paste one family per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">HO Family, Price</code> to update many at once.</p>
+    <textarea id="bulkPriceInput" rows="6" placeholder="B Pen BP-1 / Clipper Plus, 12.32
+Ball Pen BP-2, 14.50" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
+    <button class="btn btn-primary" style="margin-top:10px;" onclick="handleBulkPriceUpload()">Update Prices</button>
+    <div id="priceUploadStatus"></div>
+  </div>`;
+}
+async function handleSavePrice(family, priceStr){
+  const price = Number(priceStr);
+  if(isNaN(price) || price<0){ alert('Enter a valid price.'); return; }
+  const {error} = await sb.from('ho_family_price').upsert({ho_family:family, price, updated_by:state.user.username}, {onConflict:'ho_family'});
+  if(error){ alert('Could not save: '+error.message); return; }
+  tvaCache.prices = null;
+  state.tvaPriceList = await fetchHoFamilyPriceList();
+  render();
+}
+async function handleBulkPriceUpload(){
+  const text = document.getElementById('bulkPriceInput').value;
+  if(!text.trim()){ alert('Paste at least one line.'); return; }
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  const rows = [], unmatched = [];
+  lines.forEach(line=>{
+    const parts = line.split(/[,\t]/).map(p=>p.trim());
+    if(parts.length<2){ unmatched.push(line); return; }
+    const price = Number(parts[1]);
+    if(isNaN(price)){ unmatched.push(line); return; }
+    rows.push({ho_family:parts[0], price, updated_by:state.user.username});
+  });
+  if(rows.length){
+    const {error} = await sb.from('ho_family_price').upsert(rows, {onConflict:'ho_family'});
+    if(error){ document.getElementById('priceUploadStatus').innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
+  }
+  tvaCache.prices = null;
+  state.tvaPriceList = await fetchHoFamilyPriceList();
+  document.getElementById('priceUploadStatus').innerHTML = `<div style="margin-top:10px;padding:10px;border-radius:8px;background:var(--green-bg);">${rows.length} updated.${unmatched.length?` ${unmatched.length} line(s) skipped (couldn't parse).`:''}</div>`;
+  render();
+}
+
+function renderTvaTargetPanel(){
+  const result = state.tvaUploadResult;
+  return `
+  <div class="panel">
+    <h3>Upload Family Target</h3>
+    <div class="row-flex" style="margin-bottom:14px;">
+      <div class="field" style="max-width:200px;">
+        <label>Month</label>
+        <select id="tvaTargetMonth">${TVA_MONTH_OPTIONS.map(m=>`<option value="${m}">${tvaMonthLabel(m)}</option>`).join('')}</select>
+      </div>
+      <div class="field" style="max-width:220px;">
+        <label>Town</label>
+        <select id="tvaTargetTown">${ALL_TOWNS_FLAT().map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select>
+      </div>
+    </div>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Paste one family per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">Target Family, Qty</code> — matches your territory target sheet's Item Description column.</p>
+    <textarea id="tvaTargetPaste" rows="8" placeholder="Ink F Pen 15ml, 477.82
+Ball Pen BP-1, 78368.30" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
+    <button class="btn btn-primary" style="margin-top:10px;" onclick="handleTvaTargetUpload()">Upload Target</button>
+    ${result && result.kind==='target' ? renderTvaUploadResultBox(result) : ''}
+  </div>`;
+}
+function ALL_TOWNS_FLAT(){ return RSM_IDS.flatMap(id=>TOWN_DATA[id].towns); }
+async function handleTvaTargetUpload(){
+  const month = document.getElementById('tvaTargetMonth').value;
+  const town = document.getElementById('tvaTargetTown').value;
+  const text = document.getElementById('tvaTargetPaste').value;
+  if(!text.trim()){ alert('Paste at least one line.'); return; }
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  const rsmId = TOWN_TO_RSM[town.toLowerCase()] ? TOWN_TO_RSM[town.toLowerCase()].rsmId : null;
+  const rows = [], unmatched = [];
+  lines.forEach(line=>{
+    const parts = line.split(/[,\t]/).map(p=>p.trim());
+    if(parts.length<2){ unmatched.push(line); return; }
+    const qty = Number(parts[1]);
+    if(isNaN(qty)){ unmatched.push(line); return; }
+    rows.push({month, town, target_family:parts[0], target_qty:qty, rsm_id:rsmId});
+  });
+  let res;
+  if(rows.length){
+    const {error} = await sb.from('monthly_target').upsert(rows, {onConflict:'month,town,target_family'});
+    res = error ? {ok:false,error:error.message} : {ok:true, count:rows.length, unmatched};
+  } else res = {ok:true, count:0, unmatched};
+  state.tvaUploadResult = {kind:'target', ...res};
+  render();
+}
+function renderTvaUploadResultBox(r){
+  if(!r.ok) return `<div class="err" style="margin-top:12px;">${esc(r.error)}</div>`;
+  return `<div style="margin-top:12px;padding:12px 14px;border-radius:8px;background:var(--green-bg);font-size:12.5px;">
+    <b>${r.count} row(s) updated.</b>${r.unmatched && r.unmatched.length ? `<div style="margin-top:6px;color:var(--amber);">${r.unmatched.length} line(s) skipped:<br>${r.unmatched.map(esc).join('<br>')}</div>` : ''}
+  </div>`;
+}
+
+/* ---- Primary / Secondary achievement: full workbook file upload (matches your ERP matrix export) ---- */
+function renderTvaAchievementFilePanel(kind){
+  const result = state.tvaUploadResult;
+  const label = kind==='primary' ? 'Primary (Net Sales / Orders)' : 'Secondary (Sell-out)';
+  return `
+  <div class="panel">
+    <h3>Upload ${label} Achievement</h3>
+    <div class="row-flex" style="margin-bottom:14px;">
+      <div class="field" style="max-width:200px;">
+        <label>Month</label>
+        <select id="tvaAch${kind}Month">${TVA_MONTH_OPTIONS.map(m=>`<option value="${m}">${tvaMonthLabel(m)}</option>`).join('')}</select>
+      </div>
+    </div>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
+      Upload the matrix-format workbook exactly as exported (SKU rows, town columns). Matches town names against this portal's town list automatically.
+    </p>
+    <label class="upload-box" for="tvaFile${kind}">
+      <div style="font-size:28px;margin-bottom:8px;">⬆</div>
+      <div style="font-weight:600;">Click to choose the .xlsx file</div>
+      <input id="tvaFile${kind}" type="file" accept=".xlsx,.xls" onchange="handleTvaAchievementUpload(this.files[0], '${kind}')">
+    </label>
+    <div id="tvaAchStatus${kind}"></div>
+    ${result && result.kind===kind ? renderTvaUploadResultBox(result) : ''}
+  </div>`;
+}
+function tvaFindTownFromHeader(h){
+  if(!h) return null;
+  const s = String(h);
+  const parts = s.includes('-') ? s.split('-').slice(1).join('-') : s;
+  const cleaned = parts.replace(/\s*\([^)]*\)\s*$/,'').trim().replace(/,$/,'');
+  const hit = TOWN_TO_RSM[cleaned.toLowerCase()];
+  return hit ? hit.town : null;
+}
+async function handleTvaAchievementUpload(file, kind){
+  if(!file) return;
+  const month = document.getElementById(`tvaAch${kind}Month`).value;
+  const statusEl = document.getElementById(`tvaAchStatus${kind}`);
+  statusEl.innerHTML = '<div class="loading">Processing workbook…</div>';
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, {type:'array'});
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const grid = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+
+    let rows = [];
+    let unmatchedTowns = new Set();
+    if(kind==='primary'){
+      // Format: row5 (idx4) = headers with 'CODE-Town (Region)' per column; data from row6 (idx5)
+      const headerRow = grid[4] || [];
+      const townCols = {};
+      headerRow.forEach((h,c)=>{ if(c>=2){ const t = tvaFindTownFromHeader(h); if(t) townCols[c]=t; else if(h) unmatchedTowns.add(String(h)); } });
+      for(let r=5; r<grid.length; r++){
+        const row = grid[r]; if(!row || !row[0]) continue;
+        const sku = String(row[0]).trim().padStart(9,'0');
+        Object.entries(townCols).forEach(([c,town])=>{
+          const v = row[c];
+          if(v!=null && v!==0) rows.push({month, town, sku_code:sku, qty:Number(v)});
+        });
+      }
+    } else {
+      // Secondary format: row1 (idx0) = merged town names every 3 cols; row2 (idx1) = sub-headers incl 'Pcs'
+      const townRow = grid[0] || [];
+      const subRow = grid[1] || [];
+      let currentTown = null;
+      const pcsCols = {};
+      townRow.forEach((h,c)=>{ if(c>=2 && h && !String(h).toLowerCase().includes('total sum')) currentTown = tvaFindTownFromHeader(h) || String(h).trim(); if(c>=2 && currentTown){ /* remember mapping lazily below */ } });
+      // second pass using subRow to find Pcs columns, mapping back to the town active at that column
+      let activeTown = null;
+      for(let c=0; c<townRow.length; c++){
+        if(c<2) continue;
+        if(townRow[c] && !String(townRow[c]).toLowerCase().includes('total sum')){
+          activeTown = tvaFindTownFromHeader(townRow[c]) || null;
+          if(!activeTown && townRow[c]) unmatchedTowns.add(String(townRow[c]));
+        }
+        if(activeTown && subRow[c] && String(subRow[c]).toLowerCase().includes('pcs')){
+          pcsCols[c] = activeTown;
+        }
+      }
+      for(let r=2; r<grid.length; r++){
+        const row = grid[r]; if(!row || !row[0]) continue;
+        const sku = String(Math.trunc(Number(row[0]))).padStart(9,'0');
+        Object.entries(pcsCols).forEach(([c,town])=>{
+          const v = row[c];
+          if(v!=null && v!==0) rows.push({month, town, sku_code:sku, qty:Number(v)});
+        });
+      }
+    }
+
+    const table = kind==='primary' ? 'monthly_achievement_primary' : 'monthly_achievement_secondary';
+    const chunkSize = 1000;
+    for(let i=0;i<rows.length;i+=chunkSize){
+      const chunk = rows.slice(i,i+chunkSize);
+      const {error} = await sb.from(table).upsert(chunk, {onConflict:'month,town,sku_code'});
+      if(error){ statusEl.innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
+    }
+    state.tvaUploadResult = {kind, ok:true, count:rows.length, unmatched: Array.from(unmatchedTowns)};
+    statusEl.innerHTML = '';
+    render();
+  }catch(e){
+    statusEl.innerHTML = `<div class="err">Could not process file: ${esc(e.message||String(e))}</div>`;
+  }
+}
 
 /* ============================= INIT ============================= */
 restoreSession();
