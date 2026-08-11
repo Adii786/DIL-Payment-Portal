@@ -1577,6 +1577,33 @@ async function fetchAchievementQty(table, month, town, metric){
   return map;
 }
 
+/* Bulk equivalents — fetch ALL towns in a scope with ONE query instead of one
+   query per town. This is what the combined territory view uses: for a
+   20-town RSM, this cuts ~240 sequential queries down to a fixed ~12,
+   regardless of how many towns are in scope. */
+async function fetchMonthlyTargetBulk(month, towns){
+  if(!sb) return {};
+  const {data, error} = await sb.from('monthly_target').select('*').eq('month',month).in('town', towns);
+  if(error){ console.error(error); return {}; }
+  const byTown = {};
+  (data||[]).forEach(r=>{
+    (byTown[r.town] = byTown[r.town]||{})[r.target_family] = (byTown[r.town][r.target_family]||0) + Number(r.target_qty||0);
+  });
+  return byTown;
+}
+async function fetchAchievementQtyBulk(table, month, towns, metric){
+  if(!sb) return {};
+  let q = sb.from(table).select('*').eq('month',month).in('town', towns);
+  if(metric) q = q.eq('metric', metric);
+  const {data, error} = await q;
+  if(error){ console.error(error); return {}; }
+  const byTown = {};
+  (data||[]).forEach(r=>{
+    (byTown[r.town] = byTown[r.town]||{})[r.sku_code] = (byTown[r.town][r.sku_code]||0) + Number(r.qty||0);
+  });
+  return byTown;
+}
+
 /* ---- Quarters: Jul-Sep = Q1, Oct-Dec = Q2, Jan-Mar = Q3, Apr-Jun = Q4 (fiscal year starting July) ---- */
 const QUARTER_MONTHS = {
   '2026-Q1': ['2026-07','2026-08','2026-09'],
@@ -1679,34 +1706,88 @@ async function computeQuarterlyRollup(quarter, town){
   return rows;
 }
 
-/* Sums per-family rows across several towns' individual rollups — used for
-   the RSM/territory "combined" view (fix #3, #4). */
+/* Sums per-family figures across several towns in ONE pass — used for the
+   RSM/territory "combined" view (fix #3, #4). Uses the bulk fetchers above
+   so this stays a fixed ~12 queries no matter how many towns are in scope,
+   instead of looping a full per-town computation for each one. */
 async function computeQuarterlyRollupCombined(quarter, towns){
-  const perTown = await Promise.all(towns.map(t=>computeQuarterlyRollup(quarter, t)));
-  const byFamily = {};
-  const order = [];
-  perTown.forEach(rows=>{
-    rows.forEach(r=>{
-      if(!(r.family in byFamily)){
-        byFamily[r.family] = {
-          family:r.family, price:r.price, quarterTargetQty:0, quarterTargetValue:0,
-          months: r.months.map(md=>({month:md.month, ordersQty:0, ordersValue:0, salesQty:0, salesValue:0, secQty:0, secValue:0})),
-          deficitPrimaryQty:0, deficitPrimaryValue:0, deficitSecondaryQty:0, deficitSecondaryValue:0
-        };
-        order.push(r.family);
-      }
-      const acc = byFamily[r.family];
-      acc.quarterTargetQty += r.quarterTargetQty; acc.quarterTargetValue += r.quarterTargetValue;
-      r.months.forEach((md,i)=>{
-        acc.months[i].ordersQty += md.ordersQty; acc.months[i].ordersValue += md.ordersValue;
-        acc.months[i].salesQty += md.salesQty; acc.months[i].salesValue += md.salesValue;
-        acc.months[i].secQty += md.secQty; acc.months[i].secValue += md.secValue;
-      });
-      acc.deficitPrimaryQty += r.deficitPrimaryQty; acc.deficitPrimaryValue += r.deficitPrimaryValue;
-      acc.deficitSecondaryQty += r.deficitSecondaryQty; acc.deficitSecondaryValue += r.deficitSecondaryValue;
-    });
+  const months = QUARTER_MONTHS[quarter];
+  const [hierarchy, prices] = await Promise.all([fetchProductHierarchyV2(), fetchHoFamilyPrices()]);
+
+  const targetByTownByMonth = {}, ordersByTownByMonth = {}, salesByTownByMonth = {}, secByTownByMonth = {};
+  await Promise.all(months.map(async m=>{
+    const [t, o, s, sec] = await Promise.all([
+      fetchMonthlyTargetBulk(m, towns),
+      fetchAchievementQtyBulk('monthly_achievement_primary', m, towns, 'orders'),
+      fetchAchievementQtyBulk('monthly_achievement_primary', m, towns, 'sales'),
+      fetchAchievementQtyBulk('monthly_achievement_secondary', m, towns)
+    ]);
+    targetByTownByMonth[m]=t; ordersByTownByMonth[m]=o; salesByTownByMonth[m]=s; secByTownByMonth[m]=sec;
+  }));
+
+  const familyOrder = [];
+  const skusByFamily = {};
+  const seenFamily = new Set();
+  Object.entries(hierarchy).forEach(([sku, meta])=>{
+    if(!seenFamily.has(meta.ho_family)){ seenFamily.add(meta.ho_family); familyOrder.push(meta.ho_family); }
+    (skusByFamily[meta.ho_family] = skusByFamily[meta.ho_family]||[]).push(sku);
   });
-  return order.map(f=>byFamily[f]);
+  const firstFamilyForTargetFamily = {};
+  familyOrder.forEach(fam=>{
+    const tfs = new Set(skusByFamily[fam].map(sku=>hierarchy[sku].target_family));
+    tfs.forEach(tf=>{ if(!(tf in firstFamilyForTargetFamily)) firstFamilyForTargetFamily[tf] = fam; });
+  });
+
+  return familyOrder.map(fam=>{
+    const skus = skusByFamily[fam];
+    const price = prices[fam] || 0;
+
+    let quarterTarget = 0;
+    towns.forEach(town=>{
+      months.forEach(m=>{
+        const tMap = (targetByTownByMonth[m]||{})[town] || {};
+        const tfSeen = new Set();
+        skus.forEach(sku=>{
+          const tf = hierarchy[sku].target_family;
+          if(tfSeen.has(tf)) return;
+          tfSeen.add(tf);
+          if(firstFamilyForTargetFamily[tf] === fam) quarterTarget += (tMap[tf]||0);
+        });
+      });
+    });
+
+    const monthData = months.map(m=>{
+      let orders=0, sales=0, sec=0;
+      towns.forEach(town=>{
+        const oMap = (ordersByTownByMonth[m]||{})[town] || {};
+        const sMap = (salesByTownByMonth[m]||{})[town] || {};
+        const secMap = (secByTownByMonth[m]||{})[town] || {};
+        skus.forEach(sku=>{
+          const uom = hierarchy[sku].uom || 1;
+          orders += (oMap[sku]||0) / uom;
+          sales += (sMap[sku]||0) / uom;
+          sec += (secMap[sku]||0) / uom;
+        });
+      });
+      return {month:m, orders, sales, sec};
+    });
+
+    const totalSalesQty = monthData.reduce((s,md)=>s+md.sales,0);
+    const totalSecQty = monthData.reduce((s,md)=>s+md.sec,0);
+    const deficitPrimaryQty = totalSalesQty - quarterTarget;
+    const deficitSecondaryQty = totalSecQty - quarterTarget;
+
+    return {
+      family: fam, price,
+      quarterTargetQty: quarterTarget, quarterTargetValue: quarterTarget*price,
+      months: monthData.map(md=>({
+        month: md.month, ordersQty: md.orders, ordersValue: md.orders*price,
+        salesQty: md.sales, salesValue: md.sales*price, secQty: md.sec, secValue: md.sec*price
+      })),
+      deficitPrimaryQty, deficitPrimaryValue: deficitPrimaryQty*price,
+      deficitSecondaryQty, deficitSecondaryValue: deficitSecondaryQty*price
+    };
+  });
 }
 
 /* Which months in this quarter actually have target data uploaded yet, for
@@ -1733,24 +1814,28 @@ async function loadRsmAchievementView(){
   const body = document.getElementById('rsmBody');
   if(!state.tvaQuarter) state.tvaQuarter = TVA_QUARTER_OPTIONS[0];
   const towns = TOWN_DATA[state.user.rsmId].towns;
-  if(state.tvaSelectedTown){
-    if(!state.tvaRows){
-      state.tvaRows = await computeQuarterlyRollup(state.tvaQuarter, state.tvaSelectedTown);
-      state.tvaActiveMonths = await fetchActiveMonths(state.tvaQuarter, state.tvaSelectedTown);
+  try{
+    if(state.tvaSelectedTown){
+      if(!state.tvaRows){
+        state.tvaRows = await computeQuarterlyRollup(state.tvaQuarter, state.tvaSelectedTown);
+        state.tvaActiveMonths = await fetchActiveMonths(state.tvaQuarter, state.tvaSelectedTown);
+      }
+      body.innerHTML = renderTvaScreen({
+        title: state.tvaSelectedTown, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
+        onBack: 'tvaBackToGrid()', townsBelow: null, downloadName: state.tvaSelectedTown
+      });
+    } else {
+      if(!state.tvaRows){
+        state.tvaRows = await computeQuarterlyRollupCombined(state.tvaQuarter, towns);
+        state.tvaActiveMonths = await fetchActiveMonths(state.tvaQuarter, towns);
+      }
+      body.innerHTML = renderTvaScreen({
+        title: `${state.user.name} — All Towns`, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
+        onBack: null, townsBelow: towns, downloadName: state.user.name
+      });
     }
-    body.innerHTML = renderTvaScreen({
-      title: state.tvaSelectedTown, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
-      onBack: 'tvaBackToGrid()', townsBelow: null, downloadName: state.tvaSelectedTown
-    });
-  } else {
-    if(!state.tvaRows){
-      state.tvaRows = await computeQuarterlyRollupCombined(state.tvaQuarter, towns);
-      state.tvaActiveMonths = await fetchActiveMonths(state.tvaQuarter, towns);
-    }
-    body.innerHTML = renderTvaScreen({
-      title: `${state.user.name} — All Towns`, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
-      onBack: null, townsBelow: towns, downloadName: state.user.name
-    });
+  }catch(e){
+    body.innerHTML = `<div class="err">Could not load Target vs Achievement: ${esc(e.message||String(e))}. <button class="link-btn" onclick="state.tvaRows=null;render();">Retry</button></div>`;
   }
 }
 function renderTvaQuarterSelector(){
@@ -1894,34 +1979,40 @@ function tvaDownloadCsv(name){
 async function loadNsmAchievementView(){
   const body = document.getElementById('nsmBody');
   if(!state.tvaQuarter) state.tvaQuarter = TVA_QUARTER_OPTIONS[0];
-  if(state.tvaSelectedTown){
-    if(!state.tvaRows){
-      state.tvaRows = await computeQuarterlyRollup(state.tvaQuarter, state.tvaSelectedTown);
-      state.tvaActiveMonths = await fetchActiveMonths(state.tvaQuarter, state.tvaSelectedTown);
+  try{
+    if(state.tvaSelectedTown){
+      if(!state.tvaRows){
+        body.innerHTML = '<div class="loading">Loading…</div>';
+        state.tvaRows = await computeQuarterlyRollup(state.tvaQuarter, state.tvaSelectedTown);
+        state.tvaActiveMonths = await fetchActiveMonths(state.tvaQuarter, state.tvaSelectedTown);
+      }
+      body.innerHTML = renderTvaScreen({
+        title: state.tvaSelectedTown, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
+        onBack: 'tvaBackToRsmCombined()', townsBelow: null, downloadName: state.tvaSelectedTown
+      });
+    } else if(state.tvaExpandedRsm){
+      const towns = TOWN_DATA[state.tvaExpandedRsm].towns;
+      if(!state.tvaRows){
+        body.innerHTML = '<div class="loading">Loading territory summary…</div>';
+        state.tvaRows = await computeQuarterlyRollupCombined(state.tvaQuarter, towns);
+        state.tvaActiveMonths = await fetchActiveMonths(state.tvaQuarter, towns);
+      }
+      body.innerHTML = renderTvaScreen({
+        title: `${TOWN_DATA[state.tvaExpandedRsm].name} — All Towns`, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
+        onBack: 'tvaBackToRsmList()', townsBelow: towns, downloadName: TOWN_DATA[state.tvaExpandedRsm].name
+      });
+    } else {
+      body.innerHTML = `<div class="panel">${renderTvaQuarterSelector()}
+        <h3>Target vs Achievement — by RSM <span class="cnt">tap to view territory-wide, then drill into towns</span></h3>
+        <div class="town-grid">
+          ${RSM_IDS.map(id=>`<button class="town-card" onclick="tvaDrillRsm('${id}')">
+            <span class="tc-name">${esc(TOWN_DATA[id].name)}</span>
+            <span class="tc-nums"><span>${TOWN_DATA[id].towns.length} towns</span></span>
+          </button>`).join('')}
+        </div></div>`;
     }
-    body.innerHTML = renderTvaScreen({
-      title: state.tvaSelectedTown, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
-      onBack: 'tvaBackToRsmCombined()', townsBelow: null, downloadName: state.tvaSelectedTown
-    });
-  } else if(state.tvaExpandedRsm){
-    const towns = TOWN_DATA[state.tvaExpandedRsm].towns;
-    if(!state.tvaRows){
-      state.tvaRows = await computeQuarterlyRollupCombined(state.tvaQuarter, towns);
-      state.tvaActiveMonths = await fetchActiveMonths(state.tvaQuarter, towns);
-    }
-    body.innerHTML = renderTvaScreen({
-      title: `${TOWN_DATA[state.tvaExpandedRsm].name} — All Towns`, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
-      onBack: 'tvaBackToRsmList()', townsBelow: towns, downloadName: TOWN_DATA[state.tvaExpandedRsm].name
-    });
-  } else {
-    body.innerHTML = `<div class="panel">${renderTvaQuarterSelector()}
-      <h3>Target vs Achievement — by RSM <span class="cnt">tap to view territory-wide, then drill into towns</span></h3>
-      <div class="town-grid">
-        ${RSM_IDS.map(id=>`<button class="town-card" onclick="tvaDrillRsm('${id}')">
-          <span class="tc-name">${esc(TOWN_DATA[id].name)}</span>
-          <span class="tc-nums"><span>${TOWN_DATA[id].towns.length} towns</span></span>
-        </button>`).join('')}
-      </div></div>`;
+  }catch(e){
+    body.innerHTML = `<div class="err">Could not load Target vs Achievement: ${esc(e.message||String(e))}. <button class="link-btn" onclick="state.tvaRows=null;render();">Retry</button></div>`;
   }
 }
 function tvaDrillRsm(id){ state.tvaExpandedRsm=id; state.tvaRows=null; state.tvaActiveMonths=null; render(); }
