@@ -258,6 +258,7 @@ let state = {
   overdueUploadResult:null,
   pastDueDocxResult:null,
   tvaQuarter:null, tvaMode:'volume', tvaSelectedTown:null, tvaRows:null, tvaActiveMonths:null, tvaExpandedRsm:null,
+  tvaNationalRows:null, tvaNationalActiveMonths:null,
   tvaUploadSubTab:'price', tvaUploadResult:null, tvaPriceList:null,
   adminUploadSubTab:'docx',
   customerTownMapList:null,
@@ -1804,6 +1805,18 @@ async function fetchActiveMonths(quarter, towns){
   const active = months.filter(m=>present.has(m));
   return active.length ? active : [months[0]];
 }
+/* Which months are "live" company-wide for this quarter — used everywhere
+   (national, RSM-combined, single town) so every screen shows the same set
+   of month columns, instead of each scope deciding independently based on
+   just its own towns' upload completeness. Cached per quarter since it only
+   changes when a new month's target gets uploaded somewhere. */
+let tvaGlobalActiveMonthsCache = {};
+async function getGlobalActiveMonths(quarter){
+  if(tvaGlobalActiveMonthsCache[quarter]) return tvaGlobalActiveMonthsCache[quarter];
+  const months = await fetchActiveMonths(quarter, ALL_TOWNS_FLAT());
+  tvaGlobalActiveMonthsCache[quarter] = months;
+  return months;
+}
 function tvaTargetLabel(activeMonths, allMonths){
   if(activeMonths.length === allMonths.length) return `${tvaQuarterLabel(state.tvaQuarter)} Target`;
   return activeMonths.map(m=>tvaMonthShort(m).split(' ')[0]).join(' & ') + ' Target';
@@ -1818,7 +1831,7 @@ async function loadRsmAchievementView(){
     if(state.tvaSelectedTown){
       if(!state.tvaRows){
         state.tvaRows = await computeQuarterlyRollup(state.tvaQuarter, state.tvaSelectedTown);
-        state.tvaActiveMonths = await fetchActiveMonths(state.tvaQuarter, state.tvaSelectedTown);
+        state.tvaActiveMonths = await getGlobalActiveMonths(state.tvaQuarter);
       }
       body.innerHTML = renderTvaScreen({
         title: state.tvaSelectedTown, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
@@ -1827,7 +1840,7 @@ async function loadRsmAchievementView(){
     } else {
       if(!state.tvaRows){
         state.tvaRows = await computeQuarterlyRollupCombined(state.tvaQuarter, towns);
-        state.tvaActiveMonths = await fetchActiveMonths(state.tvaQuarter, towns);
+        state.tvaActiveMonths = await getGlobalActiveMonths(state.tvaQuarter);
       }
       body.innerHTML = renderTvaScreen({
         title: `${state.user.name} — All Towns`, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
@@ -1855,7 +1868,7 @@ function renderTvaQuarterSelector(){
     </div>
   </div>`;
 }
-function tvaChangeQuarter(q){ state.tvaQuarter=q; state.tvaRows=null; state.tvaActiveMonths=null; render(); }
+function tvaChangeQuarter(q){ state.tvaQuarter=q; state.tvaRows=null; state.tvaActiveMonths=null; state.tvaNationalRows=null; state.tvaNationalActiveMonths=null; render(); }
 function tvaChangeMode(m){ state.tvaMode=m; render(); }
 function tvaSelectTown(t){ state.tvaSelectedTown=t; state.tvaRows=null; state.tvaActiveMonths=null; render(); }
 function tvaBackToGrid(){ state.tvaSelectedTown=null; state.tvaRows=null; state.tvaActiveMonths=null; render(); }
@@ -1984,7 +1997,7 @@ async function loadNsmAchievementView(){
       if(!state.tvaRows){
         body.innerHTML = '<div class="loading">Loading…</div>';
         state.tvaRows = await computeQuarterlyRollup(state.tvaQuarter, state.tvaSelectedTown);
-        state.tvaActiveMonths = await fetchActiveMonths(state.tvaQuarter, state.tvaSelectedTown);
+        state.tvaActiveMonths = await getGlobalActiveMonths(state.tvaQuarter);
       }
       body.innerHTML = renderTvaScreen({
         title: state.tvaSelectedTown, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
@@ -1995,21 +2008,33 @@ async function loadNsmAchievementView(){
       if(!state.tvaRows){
         body.innerHTML = '<div class="loading">Loading territory summary…</div>';
         state.tvaRows = await computeQuarterlyRollupCombined(state.tvaQuarter, towns);
-        state.tvaActiveMonths = await fetchActiveMonths(state.tvaQuarter, towns);
+        state.tvaActiveMonths = await getGlobalActiveMonths(state.tvaQuarter);
       }
       body.innerHTML = renderTvaScreen({
         title: `${TOWN_DATA[state.tvaExpandedRsm].name} — All Towns`, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
         onBack: 'tvaBackToRsmList()', townsBelow: towns, downloadName: TOWN_DATA[state.tvaExpandedRsm].name
       });
     } else {
-      body.innerHTML = `<div class="panel">${renderTvaQuarterSelector()}
-        <h3>Target vs Achievement — by RSM <span class="cnt">tap to view territory-wide, then drill into towns</span></h3>
+      if(!state.tvaNationalRows){
+        body.innerHTML = '<div class="loading">Loading national summary…</div>';
+        const allTowns = ALL_TOWNS_FLAT();
+        state.tvaNationalRows = await computeQuarterlyRollupCombined(state.tvaQuarter, allTowns);
+        state.tvaNationalActiveMonths = await getGlobalActiveMonths(state.tvaQuarter);
+      }
+      const nationalScreen = renderTvaScreen({
+        title: 'All Regions', rows: state.tvaNationalRows, activeMonths: state.tvaNationalActiveMonths,
+        onBack: null, townsBelow: null, downloadName: 'All_Regions'
+      });
+      const rsmGrid = `<div class="panel">
+        <h3>By RSM <span class="cnt">tap to view territory-wide, then drill into towns</span></h3>
         <div class="town-grid">
           ${RSM_IDS.map(id=>`<button class="town-card" onclick="tvaDrillRsm('${id}')">
             <span class="tc-name">${esc(TOWN_DATA[id].name)}</span>
             <span class="tc-nums"><span>${TOWN_DATA[id].towns.length} towns</span></span>
           </button>`).join('')}
-        </div></div>`;
+        </div>
+      </div>`;
+      body.innerHTML = nationalScreen + rsmGrid;
     }
   }catch(e){
     body.innerHTML = `<div class="err">Could not load Target vs Achievement: ${esc(e.message||String(e))}. <button class="link-btn" onclick="state.tvaRows=null;render();">Retry</button></div>`;
