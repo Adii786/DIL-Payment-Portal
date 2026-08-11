@@ -1582,24 +1582,41 @@ async function fetchAchievementQty(table, month, town, metric){
    query per town. This is what the combined territory view uses: for a
    20-town RSM, this cuts ~240 sequential queries down to a fixed ~12,
    regardless of how many towns are in scope. */
+/* Supabase caps a single response at 1000 rows by default — the bulk
+   fetchers below can legitimately need more than that (up to ~22,500 rows
+   for SKU-level achievement across all 63 towns in one month), so they page
+   through in chunks of 1000 until a page comes back short, guaranteeing the
+   full result regardless of how large the table grows. */
+async function fetchAllPaged(queryBuilderFn){
+  const pageSize = 1000;
+  let offset = 0, all = [];
+  while(true){
+    const {data, error} = await queryBuilderFn().range(offset, offset+pageSize-1);
+    if(error){ console.error(error); return all; }
+    all = all.concat(data||[]);
+    if(!data || data.length < pageSize) break;
+    offset += pageSize;
+  }
+  return all;
+}
 async function fetchMonthlyTargetBulk(month, towns){
   if(!sb) return {};
-  const {data, error} = await sb.from('monthly_target').select('*').eq('month',month).in('town', towns);
-  if(error){ console.error(error); return {}; }
+  const data = await fetchAllPaged(()=> sb.from('monthly_target').select('*').eq('month',month).in('town', towns));
   const byTown = {};
-  (data||[]).forEach(r=>{
+  data.forEach(r=>{
     (byTown[r.town] = byTown[r.town]||{})[r.target_family] = (byTown[r.town][r.target_family]||0) + Number(r.target_qty||0);
   });
   return byTown;
 }
 async function fetchAchievementQtyBulk(table, month, towns, metric){
   if(!sb) return {};
-  let q = sb.from(table).select('*').eq('month',month).in('town', towns);
-  if(metric) q = q.eq('metric', metric);
-  const {data, error} = await q;
-  if(error){ console.error(error); return {}; }
+  const data = await fetchAllPaged(()=>{
+    let q = sb.from(table).select('*').eq('month',month).in('town', towns);
+    if(metric) q = q.eq('metric', metric);
+    return q;
+  });
   const byTown = {};
-  (data||[]).forEach(r=>{
+  data.forEach(r=>{
     (byTown[r.town] = byTown[r.town]||{})[r.sku_code] = (byTown[r.town][r.sku_code]||0) + Number(r.qty||0);
   });
   return byTown;
@@ -1799,10 +1816,17 @@ async function fetchActiveMonths(quarter, towns){
   const months = QUARTER_MONTHS[quarter];
   const townList = Array.isArray(towns) ? towns : [towns];
   if(!sb) return months;
-  const {data, error} = await sb.from('monthly_target').select('month').in('month', months).in('town', townList);
-  if(error){ console.error(error); return months; }
-  const present = new Set((data||[]).map(r=>r.month));
-  const active = months.filter(m=>present.has(m));
+  // Check each candidate month's existence directly (limit 1) rather than
+  // pulling every matching row and inspecting client-side — with a large
+  // table, .in('town', 63 towns) can return more rows than Supabase's
+  // default 1000-row cap, silently truncating the result and making a
+  // real month look "not uploaded yet" if it wasn't in the truncated slice.
+  const checks = await Promise.all(months.map(async m=>{
+    const {data, error} = await sb.from('monthly_target').select('month').eq('month', m).in('town', townList).limit(1);
+    if(error){ console.error(error); return null; }
+    return (data && data.length) ? m : null;
+  }));
+  const active = checks.filter(Boolean);
   return active.length ? active : [months[0]];
 }
 /* Which months are "live" company-wide for this quarter — used everywhere
