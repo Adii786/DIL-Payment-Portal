@@ -215,7 +215,7 @@ const sb = SUPABASE_CONFIGURED ? supabase.createClient(SUPABASE_URL, SUPABASE_AN
 
 /* ============================= DATA MODEL ============================= */
 const TOWN_DATA = {
-  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad','Khanpur','Turbat'] },
+  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad','Khairpur','Turbat'] },
   jamal:   { name:'Jamal e Rabbi',   towns:['Multan','Dera Ghazi Khan','Muzaffargarh','Bahawalnagar','Chishtian','Bahawalpur','Ahmedpur East','Mian Channu','Vehari','Karachi'] },
   danish:  { name:'Danish Imran',    towns:['Lahore','Gujranwala','Kasur','Sheikhupura','Pattoki','Kamonki'] },
   qaiser:  { name:'Qaiser Raza Baig',towns:['Faisalabad','Sahiwal','Okara','Pak Pattan','Burewala'] },
@@ -1899,6 +1899,24 @@ function tvaBackToGrid(){ state.tvaSelectedTown=null; state.tvaRows=null; state.
 
 /* Shared screen: summary cards + HO-family table (sorted A→Z), optionally
    followed by a "tap a town" grid underneath when viewing a combined scope. */
+/* Balance to Achieve: for every active month except the most recent, count
+   Primary Net Sales (finalized/actual); for the most recent active month,
+   count Primary Orders instead (since sales/invoicing hasn't caught up for
+   the current month yet). Balance = Target − that blended achieved figure —
+   positive means still short of target, 0 or negative means target is met. */
+function computeBalanceToAchieve(row, activeMonths){
+  if(!activeMonths.length) return {qty:0, value:0};
+  const lastMonth = activeMonths[activeMonths.length-1];
+  let achievedQty = 0, achievedValue = 0;
+  activeMonths.forEach(m=>{
+    const md = row.months.find(x=>x.month===m);
+    if(!md) return;
+    if(m===lastMonth){ achievedQty += md.ordersQty; achievedValue += md.ordersValue; }
+    else { achievedQty += md.salesQty; achievedValue += md.salesValue; }
+  });
+  return { qty: row.quarterTargetQty - achievedQty, value: row.quarterTargetValue - achievedValue };
+}
+
 function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, downloadName}){
   const isVal = state.tvaMode==='value';
   const fmt = isVal ? tvaFmtRs : tvaFmtQty;
@@ -1906,11 +1924,12 @@ function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, downloa
   const sorted = [...rows].sort((a,b)=> a.family.localeCompare(b.family));
   const targetLabel = tvaTargetLabel(activeMonths, allMonths);
 
-  let totTarget=0, totDefP=0, totDefS=0;
+  let totTarget=0, totBalance=0, totDefS=0;
   const totMonth = activeMonths.map(()=>({orders:0,sales:0,sec:0}));
   sorted.forEach(r=>{
     totTarget += isVal?r.quarterTargetValue:r.quarterTargetQty;
-    totDefP += isVal?r.deficitPrimaryValue:r.deficitPrimaryQty;
+    const bal = computeBalanceToAchieve(r, activeMonths);
+    totBalance += isVal?bal.value:bal.qty;
     totDefS += isVal?r.deficitSecondaryValue:r.deficitSecondaryQty;
     activeMonths.forEach((m,i)=>{
       const md = r.months.find(x=>x.month===m);
@@ -1930,12 +1949,11 @@ function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, downloa
   ${renderTvaQuarterSelector()}
   <div class="cards-row">
     <div class="stat-card"><div class="stat-label">${esc(targetLabel)}</div><div class="stat-value">${fmt(totTarget)}</div></div>
-    ${activeMonths.map((m,i)=>`<div class="stat-card"><div class="stat-label">${tvaMonthShort(m)} Primary Net Sales</div><div class="stat-value">${fmt(totMonth[i].sales)}</div></div>`).join('')}
-    <div class="stat-card" style="border-color:${totDefP<0?'#EFC9C3':'var(--line)'};"><div class="stat-label">Deficit — Primary</div><div class="stat-value ${totDefP<0?'neg':'pos'}">${fmt(totDefP)}</div></div>
+    <div class="stat-card" style="border-color:${totBalance>0?'#EFC9C3':'var(--line)'};"><div class="stat-label">Balance to Achieve — Primary</div><div class="stat-value ${totBalance>0?'neg':'pos'}">${fmt(totBalance)}</div></div>
     <div class="stat-card" style="border-color:${totDefS<0?'#EFC9C3':'var(--line)'};"><div class="stat-label">Deficit — Secondary</div><div class="stat-value ${totDefS<0?'neg':'pos'}">${fmt(totDefS)}</div></div>
   </div>
   <div class="panel">
-    <h3>HO Family-wise <span class="cnt">${sorted.length} families · A–Z${activeMonths.length<allMonths.length?' · showing '+activeMonths.map(tvaMonthShort).join(' & ')+' only, until next month\u2019s target is uploaded':''}</span></h3>
+    <h3>HO Family-wise <span class="cnt">${sorted.length} families · A–Z${activeMonths.length<allMonths.length?' · showing '+activeMonths.map(tvaMonthShort).join(' & ')+' only, until next month\u2019s target is uploaded':''} · rows highlighted where balance is still owed against target</span></h3>
     <div style="overflow-x:auto;">
     <table class="responsive-table">
       <thead>
@@ -1943,7 +1961,7 @@ function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, downloa
           <th rowspan="2" style="vertical-align:bottom;">HO Family Name</th>
           <th rowspan="2" style="vertical-align:bottom;" class="num">${esc(targetLabel)}</th>
           ${activeMonths.map(m=>`<th colspan="3" style="text-align:center;">${tvaMonthShort(m)}</th>`).join('')}
-          <th rowspan="2" style="vertical-align:bottom;" class="num">Deficit<br>Primary</th>
+          <th rowspan="2" style="vertical-align:bottom;" class="num">Balance to<br>Achieve</th>
           <th rowspan="2" style="vertical-align:bottom;" class="num">Deficit<br>Secondary</th>
         </tr>
         <tr>
@@ -1953,9 +1971,11 @@ function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, downloa
       <tbody>
       ${sorted.map(r=>{
         const target = isVal?r.quarterTargetValue:r.quarterTargetQty;
-        const defP = isVal?r.deficitPrimaryValue:r.deficitPrimaryQty;
+        const bal = computeBalanceToAchieve(r, activeMonths);
+        const balVal = isVal?bal.value:bal.qty;
         const defS = isVal?r.deficitSecondaryValue:r.deficitSecondaryQty;
-        return `<tr>
+        const stillOwed = balVal>0;
+        return `<tr ${stillOwed ? 'style="background:var(--red-bg);"' : ''}>
           <td data-label="HO Family">${esc(r.family)}</td>
           <td class="num" data-label="${esc(targetLabel)}">${fmt(target)}</td>
           ${activeMonths.map(m=>{
@@ -1965,7 +1985,7 @@ function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, downloa
             <td class="num" data-label="${tvaMonthShort(m)} Primary Net Sales">${fmt(isVal?md.salesValue:md.salesQty)}</td>
             <td class="num" data-label="${tvaMonthShort(m)} Sec. Net Sales">${fmt(isVal?md.secValue:md.secQty)}</td>`;
           }).join('')}
-          <td class="num" data-label="Deficit Primary" style="${defP<0?'color:var(--red);font-weight:700;':''}">${fmt(defP)}</td>
+          <td class="num" data-label="Balance to Achieve" style="${stillOwed?'color:var(--red);font-weight:700;':''}">${fmt(balVal)}</td>
           <td class="num" data-label="Deficit Secondary" style="${defS<0?'color:var(--red);font-weight:700;':''}">${fmt(defS)}</td>
         </tr>`;
       }).join('')}
@@ -1992,7 +2012,7 @@ function tvaDownloadCsv(name){
   const targetLabel = tvaTargetLabel(activeMonths, QUARTER_MONTHS[state.tvaQuarter]);
   let header = `HO Family,${targetLabel} Qty,${targetLabel} Value`;
   activeMonths.forEach(m=>{ header += `,${m} Primary Orders Qty,${m} Primary Orders Value,${m} Primary Net Sales Qty,${m} Primary Net Sales Value,${m} Sec Net Sales Qty,${m} Sec Net Sales Value`; });
-  header += ',Deficit Primary Qty,Deficit Primary Value,Deficit Secondary Qty,Deficit Secondary Value\n';
+  header += ',Balance to Achieve Qty,Balance to Achieve Value,Deficit Secondary Qty,Deficit Secondary Value\n';
   let csv = header;
   const sorted = [...rows].sort((a,b)=> a.family.localeCompare(b.family));
   sorted.forEach(r=>{
@@ -2001,7 +2021,8 @@ function tvaDownloadCsv(name){
       const md = r.months.find(x=>x.month===m) || {ordersQty:0,ordersValue:0,salesQty:0,salesValue:0,secQty:0,secValue:0};
       line += `,${md.ordersQty.toFixed(2)},${md.ordersValue.toFixed(2)},${md.salesQty.toFixed(2)},${md.salesValue.toFixed(2)},${md.secQty.toFixed(2)},${md.secValue.toFixed(2)}`;
     });
-    line += `,${r.deficitPrimaryQty.toFixed(2)},${r.deficitPrimaryValue.toFixed(2)},${r.deficitSecondaryQty.toFixed(2)},${r.deficitSecondaryValue.toFixed(2)}\n`;
+    const bal = computeBalanceToAchieve(r, activeMonths);
+    line += `,${bal.qty.toFixed(2)},${bal.value.toFixed(2)},${r.deficitSecondaryQty.toFixed(2)},${r.deficitSecondaryValue.toFixed(2)}\n`;
     csv += line;
   });
   const blob = new Blob([csv], {type:'text/csv'});
@@ -2262,13 +2283,16 @@ async function handleTvaAchievementUpload(file, kind){
     let rows = [];
     let unmatchedTowns = new Set();
     if(kind==='primary'){
-      // Format: row5 (idx4) = headers with 'CODE-Town (Region)' per column; data from row6 (idx5)
+      // Format: row5 (idx4) = headers, one lead column ('as') then 'CODE-Town (Region)' per town column.
+      // Data rows: col 0 = 'CODE-Description' combined in one cell — must split off just the code.
       const headerRow = grid[4] || [];
       const townCols = {};
-      headerRow.forEach((h,c)=>{ if(c>=2){ const t = tvaFindTownFromHeader(h); if(t) townCols[c]=t; else if(h) unmatchedTowns.add(String(h)); } });
+      headerRow.forEach((h,c)=>{ if(c>=1){ const t = tvaFindTownFromHeader(h); if(t) townCols[c]=t; else if(h) unmatchedTowns.add(String(h)); } });
       for(let r=5; r<grid.length; r++){
         const row = grid[r]; if(!row || !row[0]) continue;
-        const sku = String(row[0]).trim().padStart(9,'0');
+        const rawCell = String(row[0]).trim();
+        const skuRaw = rawCell.includes('-') ? rawCell.split('-')[0].trim() : rawCell;
+        const sku = skuRaw.padStart(9,'0');
         Object.entries(townCols).forEach(([c,town])=>{
           const v = row[c];
           if(v!=null && v!==0) rows.push({month, town, sku_code:sku, qty:Number(v), metric});
