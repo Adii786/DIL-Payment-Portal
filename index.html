@@ -215,7 +215,7 @@ const sb = SUPABASE_CONFIGURED ? supabase.createClient(SUPABASE_URL, SUPABASE_AN
 
 /* ============================= DATA MODEL ============================= */
 const TOWN_DATA = {
-  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad','Khanpur','Turbat'] },
+  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad','Khairpur','Turbat'] },
   jamal:   { name:'Jamal e Rabbi',   towns:['Multan','Dera Ghazi Khan','Muzaffargarh','Bahawalnagar','Chishtian','Bahawalpur','Ahmedpur East','Mian Channu','Vehari','Karachi'] },
   danish:  { name:'Danish Imran',    towns:['Lahore','Gujranwala','Kasur','Sheikhupura','Pattoki','Kamonki'] },
   qaiser:  { name:'Qaiser Raza Baig',towns:['Faisalabad','Sahiwal','Okara','Pak Pattan','Burewala'] },
@@ -2324,15 +2324,36 @@ async function handleTvaAchievementUpload(file, kind){
       }
     }
 
+    // Dedupe by the actual upsert conflict key first — if the same
+    // town+SKU(+metric) combination appears more than once in the raw rows
+    // (e.g. a merged cell or a duplicate line in the source file), sending
+    // both to upsert() in the same batch makes Postgres reject the whole
+    // batch ("ON CONFLICT DO UPDATE command cannot affect row a second
+    // time"), which previously aborted every chunk after it silently.
+    const dedupMap = {};
+    rows.forEach(r=>{
+      const key = kind==='primary' ? `${r.month}|${r.town}|${r.sku_code}|${r.metric}` : `${r.month}|${r.town}|${r.sku_code}`;
+      if(dedupMap[key]) dedupMap[key].qty += r.qty;
+      else dedupMap[key] = {...r};
+    });
+    rows = Object.values(dedupMap);
+
     const table = kind==='primary' ? 'monthly_achievement_primary' : 'monthly_achievement_secondary';
     const conflictKey = kind==='primary' ? 'month,town,sku_code,metric' : 'month,town,sku_code';
     const chunkSize = 1000;
+    let succeeded = 0;
+    const chunkErrors = [];
     for(let i=0;i<rows.length;i+=chunkSize){
       const chunk = rows.slice(i,i+chunkSize);
       const {error} = await sb.from(table).upsert(chunk, {onConflict:conflictKey});
-      if(error){ statusEl.innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
+      if(error){ chunkErrors.push(`Rows ${i+1}-${i+chunk.length}: ${error.message}`); continue; } // keep going — don't abandon the rest of the file over one bad chunk
+      succeeded += chunk.length;
     }
-    state.tvaUploadResult = {kind, ok:true, count:rows.length, unmatched: Array.from(unmatchedTowns)};
+    if(chunkErrors.length){
+      statusEl.innerHTML = `<div class="err">${succeeded} of ${rows.length} rows saved. ${chunkErrors.length} chunk(s) failed and were skipped:<br>${chunkErrors.map(esc).join('<br>')}<br>Please re-upload the same file — already-saved rows will just be overwritten with the same values, so this is safe to retry.</div>`;
+      return;
+    }
+    state.tvaUploadResult = {kind, ok:true, count:succeeded, unmatched: Array.from(unmatchedTowns)};
     statusEl.innerHTML = '';
     render();
   }catch(e){
