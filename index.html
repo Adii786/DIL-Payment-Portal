@@ -1577,35 +1577,60 @@ function toggleNsmMtdMode(mode){ state.nsmMtdMode=mode; render(); }
 
 function exportDailyRsmSummaryExcel(){
   const overdueMap = state.nsmOverdueMap || {};
-  const rows = RSM_IDS.map(id=>{
+  const rsmRows = [];
+  const townRows = [];
+  RSM_IDS.forEach(id=>{
     const towns = TOWN_DATA[id].towns;
     const rec = state.nsmDailyRecords[id];
     let plan=0, recv=0, reported=0, overdue=0, due2=0, due5=0, due10=0;
     towns.forEach(t=>{
-      const tt=townTotals(rec,t); plan+=tt.plan; recv+=tt.received; if(tt.plan>0||tt.entries.length>0) reported++;
-      const a = overdueMap[t];
-      overdue += a?a.amount:0; due2 += a?a.due2:0; due5 += a?a.due5:0; due10 += a?a.due10:0;
+      const tt=townTotals(rec,t);
+      const a = overdueMap[t] || {due2:0,due5:0,due10:0,amount:0};
+      plan+=tt.plan; recv+=tt.received; if(tt.plan>0||tt.entries.length>0) reported++;
+      overdue += a.amount; due2 += a.due2; due5 += a.due5; due10 += a.due10;
+      const status = tt.plan===0 && tt.entries.length===0 ? 'Not started'
+        : tt.entries.length===0 ? 'Plan set'
+        : tt.received>=tt.plan ? 'Achieved' : 'Reporting';
+      townRows.push({RSM:TOWN_DATA[id].name, Town:t, Plan:tt.plan, Received:tt.received, Variance:tt.variance, 'Due 2d':a.due2, 'Due 5d':a.due5, 'Due 10d':a.due10, Overdue:a.amount, Status:status});
     });
-    return {RSM:TOWN_DATA[id].name, Plan:plan, Received:recv, Variance:recv-plan, 'Due 2d':due2, 'Due 5d':due5, 'Due 10d':due10, Overdue:overdue, 'Achv %':Math.round(achievementPct(plan,recv)), Reporting:`${reported}/${towns.length}`};
+    rsmRows.push({RSM:TOWN_DATA[id].name, Plan:plan, Received:recv, Variance:recv-plan, 'Due 2d':due2, 'Due 5d':due5, 'Due 10d':due10, Overdue:overdue, 'Achv %':Math.round(achievementPct(plan,recv)), Reporting:`${reported}/${towns.length}`});
   });
-  downloadExcelSheet(rows, `Daily_RSM_Summary_${state.nsmDate}`, `RSM Summary ${state.nsmDate}`);
+  downloadExcelSheets([
+    {rows: rsmRows, name: `RSM Summary ${state.nsmDate}`},
+    {rows: townRows, name: `Town-wise ${state.nsmDate}`}
+  ], `Daily_RSM_Summary_${state.nsmDate}`);
 }
 function exportRsmSummaryExcel(){
   const isYtd = state.nsmMtdMode==='ytd';
   const dataSource = isYtd ? state.nsmYtdData : state.nsmMtdData;
-  const rows = RSM_IDS.map(id=>{
-    const {agg} = dataSource[id];
+  const rsmRows = [];
+  const townRows = [];
+  RSM_IDS.forEach(id=>{
+    const {agg, daysElapsed} = dataSource[id];
     const towns = TOWN_DATA[id].towns;
     let plan=0, recv=0;
-    towns.forEach(t=>{ plan+=agg[t].plan; recv+=agg[t].received; });
-    return {RSM:TOWN_DATA[id].name, Plan:plan, Received:recv, Variance:recv-plan, 'Achv %':Math.round(achievementPct(plan,recv))};
+    towns.forEach(t=>{
+      const a = agg[t];
+      plan+=a.plan; recv+=a.received;
+      townRows.push({RSM:TOWN_DATA[id].name, Town:t, Plan:a.plan, Received:a.received, Variance:a.received-a.plan, 'Achv %':Math.round(achievementPct(a.plan,a.received)), 'Days Reported':`${a.daysReported}/${daysElapsed}`});
+    });
+    rsmRows.push({RSM:TOWN_DATA[id].name, Plan:plan, Received:recv, Variance:recv-plan, 'Achv %':Math.round(achievementPct(plan,recv))});
   });
-  downloadExcelSheet(rows, `${isYtd?'YTD':'MTD'}_RSM_Summary_${todayStr()}`, `RSM Summary (${isYtd?'YTD':'MTD'})`);
+  const periodLabel = isYtd ? 'YTD' : 'MTD';
+  downloadExcelSheets([
+    {rows: rsmRows, name: `RSM Summary (${periodLabel})`},
+    {rows: townRows, name: `Town-wise (${periodLabel})`}
+  ], `${periodLabel}_RSM_Summary_${todayStr()}`);
 }
 function downloadExcelSheet(rows, filename, sheetName){
-  const ws = XLSX.utils.json_to_sheet(rows);
+  downloadExcelSheets([{rows, name: sheetName}], filename);
+}
+function downloadExcelSheets(sheets, filename){
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0,31));
+  sheets.forEach(s=>{
+    const ws = XLSX.utils.json_to_sheet(s.rows);
+    XLSX.utils.book_append_sheet(wb, ws, s.name.slice(0,31));
+  });
   XLSX.writeFile(wb, `${filename}.xlsx`);
 }
 function renderExpandedMtdTowns(rsmId){
