@@ -100,6 +100,9 @@
 
   table{width:100%;border-collapse:collapse;}
   th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:700;padding:8px 10px;border-bottom:2px solid var(--line);}
+  td{padding:7px 10px;border-bottom:1px solid var(--line);border-right:1px solid var(--line);font-size:13px;}
+  td:first-child{border-left:1px solid var(--line);}
+  tr:first-child td{border-top:1px solid var(--line);}
   td{padding:10px;border-bottom:1px solid var(--line);font-size:13.5px;}
   tr.clickable{cursor:pointer;}
   tr.clickable:hover td{background:#FAFBFD;}
@@ -2096,8 +2099,8 @@ async function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, d
     const balVal = isVal?bal.value:bal.qty;
     const defS = isVal?r.deficitSecondaryValue:r.deficitSecondaryQty;
     const stillOwed = balVal>0;
-    return `<tr ${stillOwed ? 'style="background:var(--red-bg);"' : ''}>
-      <td data-label="HO Family">${esc(r.family)}</td>
+    return `<tr>
+      <td data-label="HO Family" style="padding-left:22px;">${esc(r.family)}</td>
       <td class="num" data-label="${esc(targetLabel)}">${fmt(target)}</td>
       ${activeMonths.map(m=>{
         const md = r.months.find(x=>x.month===m) || {ordersQty:0,ordersValue:0,salesQty:0,salesValue:0,secQty:0,secValue:0};
@@ -2126,8 +2129,8 @@ async function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, d
         cm[i].sec += isVal?md.secValue:md.secQty;
       });
     });
-    return `<tr style="background:var(--amber-bg);font-weight:700;">
-      <td data-label="Category">Total ${esc(cat)}</td>
+    return `<tr style="background:#E7EEF9;font-weight:700;border-top:1.5px solid #B9CBE8;border-bottom:1.5px solid #B9CBE8;">
+      <td data-label="Category" style="color:var(--navy);">Total ${esc(cat)}</td>
       <td class="num">${fmt(ct)}</td>
       ${cm.map(m=>`<td class="num">${fmt(m.orders)}</td><td class="num">${fmt(m.sales)}</td><td class="num">${fmt(m.sec)}</td>`).join('')}
       <td class="num" style="${cb>0?'color:var(--red);':''}">${fmt(cb)}</td>
@@ -2148,7 +2151,7 @@ async function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, d
     <div class="stat-card" style="border-color:${totDefS<0?'#EFC9C3':'var(--line)'};"><div class="stat-label">Deficit — Secondary</div><div class="stat-value ${totDefS<0?'neg':'pos'}">${fmt(totDefS)}</div></div>
   </div>
   <div class="panel">
-    <h3>Category &amp; HO Family-wise <span class="cnt">${categoryOrder.length} categories · ${sorted.length} families · A–Z${activeMonths.length<allMonths.length?' · showing '+activeMonths.map(tvaMonthShort).join(' & ')+' only, until next month\u2019s target is uploaded':''} · rows highlighted where balance is still owed against target</span></h3>
+    <h3>Category &amp; HO Family-wise <span class="cnt">${categoryOrder.length} categories · ${sorted.length} families · A–Z${activeMonths.length<allMonths.length?' · showing '+activeMonths.map(tvaMonthShort).join(' & ')+' only, until next month\u2019s target is uploaded':''} · blue rows are category totals, red figures still owe against target</span></h3>
     <div style="overflow-x:auto;">
     <table class="responsive-table">
       <thead>
@@ -2235,7 +2238,6 @@ async function tvaDownloadCsv(name){
 
   categoryOrder.forEach(cat=>{
     const familyRows = byCategory[cat];
-    if(familyRows.length>1) csv += categorySubtotalLine(cat, familyRows);
     familyRows.forEach(r=> csv += familyLine(cat, r));
   });
 
