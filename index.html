@@ -262,7 +262,7 @@ let state = {
   pastDueDocxResult:null,
   tvaQuarter:null, tvaMode:'volume', tvaSelectedTown:null, tvaRows:null, tvaActiveMonths:null, tvaExpandedRsm:null,
   tvaNationalRows:null, tvaNationalActiveMonths:null,
-  tvaUploadSubTab:'price', tvaUploadResult:null, tvaPriceList:null,
+  tvaUploadSubTab:'price', tvaUploadResult:null, tvaPriceList:null, tvaCategoryList:null, tvaCategorySeqList:null,
   adminUploadSubTab:'docx',
   customerTownMapList:null,
   lastDocxInvoiceRows:null,
@@ -1671,7 +1671,7 @@ document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState=
 window.addEventListener('pageshow', (e)=>{ if(e.persisted) refreshCurrentViewData(); });
 
 /* ============================= TARGET VS ACHIEVEMENT MODULE (Quarterly) ============================= */
-let tvaCache = { hierarchy:null, prices:null, categories:null };
+let tvaCache = { hierarchy:null, prices:null, categories:null, familySequence:null, categorySequence:null };
 
 async function fetchProductHierarchyV2(){
   if(tvaCache.hierarchy) return tvaCache.hierarchy;
@@ -1701,6 +1701,26 @@ async function fetchHoFamilyCategories(){
   const map = {};
   (data||[]).forEach(r=> map[r.ho_family] = r.category);
   tvaCache.categories = map;
+  return map;
+}
+async function fetchHoFamilySequences(){
+  if(tvaCache.familySequence) return tvaCache.familySequence;
+  if(!sb) return {};
+  const {data, error} = await sb.from('ho_family_category').select('ho_family,sequence');
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=> map[r.ho_family] = Number(r.sequence)||0);
+  tvaCache.familySequence = map;
+  return map;
+}
+async function fetchCategorySequences(){
+  if(tvaCache.categorySequence) return tvaCache.categorySequence;
+  if(!sb) return {};
+  const {data, error} = await sb.from('category_sequence').select('*');
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=> map[r.category] = Number(r.sequence)||0);
+  tvaCache.categorySequence = map;
   return map;
 }
 async function fetchMonthlyTarget(month, town){
@@ -2065,17 +2085,34 @@ async function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, d
   const isVal = state.tvaMode==='value';
   const fmt = isVal ? tvaFmtRs : tvaFmtQty;
   const allMonths = QUARTER_MONTHS[state.tvaQuarter];
-  const categories = await fetchHoFamilyCategories();
-  const sorted = [...rows].sort((a,b)=> a.family.localeCompare(b.family));
+  const [categories, familySeq, categorySeq] = await Promise.all([fetchHoFamilyCategories(), fetchHoFamilySequences(), fetchCategorySequences()]);
   const targetLabel = tvaTargetLabel(activeMonths, allMonths);
 
-  // Group into categories (DCM Format subtotal grouping), category then family, both A→Z
+  // Group into categories (DCM Format subtotal grouping); category order and
+  // family-within-category order both follow your configured sequence
+  // (Category Config admin panel), falling back to A→Z for anything unset.
   const byCategory = {};
-  sorted.forEach(r=>{
+  rows.forEach(r=>{
     const cat = categories[r.family] || r.family;
     (byCategory[cat] = byCategory[cat]||[]).push(r);
   });
-  const categoryOrder = Object.keys(byCategory).sort((a,b)=>a.localeCompare(b));
+  Object.values(byCategory).forEach(list=>{
+    list.sort((a,b)=>{
+      const sa = familySeq[a.family], sb = familySeq[b.family];
+      if(sa!=null && sb!=null && sa!==sb) return sa-sb;
+      if(sa!=null && sb==null) return -1;
+      if(sa==null && sb!=null) return 1;
+      return a.family.localeCompare(b.family);
+    });
+  });
+  const categoryOrder = Object.keys(byCategory).sort((a,b)=>{
+    const sa = categorySeq[a], sb = categorySeq[b];
+    if(sa!=null && sb!=null && sa!==sb) return sa-sb;
+    if(sa!=null && sb==null) return -1;
+    if(sa==null && sb!=null) return 1;
+    return a.localeCompare(b);
+  });
+  const sorted = categoryOrder.flatMap(cat=>byCategory[cat]); // for the summary cards' totals below
 
   let totTarget=0, totBalance=0, totDefS=0;
   const totMonth = activeMonths.map(()=>({orders:0,sales:0,sec:0}));
@@ -2151,7 +2188,7 @@ async function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, d
     <div class="stat-card" style="border-color:${totDefS<0?'#EFC9C3':'var(--line)'};"><div class="stat-label">Deficit — Secondary</div><div class="stat-value ${totDefS<0?'neg':'pos'}">${fmt(totDefS)}</div></div>
   </div>
   <div class="panel">
-    <h3>Category &amp; HO Family-wise <span class="cnt">${categoryOrder.length} categories · ${sorted.length} families · A–Z${activeMonths.length<allMonths.length?' · showing '+activeMonths.map(tvaMonthShort).join(' & ')+' only, until next month\u2019s target is uploaded':''} · blue rows are category totals, red figures still owe against target</span></h3>
+    <h3>Category &amp; HO Family-wise <span class="cnt">${categoryOrder.length} categories · ${sorted.length} families${activeMonths.length<allMonths.length?' · showing '+activeMonths.map(tvaMonthShort).join(' & ')+' only, until next month\u2019s target is uploaded':''} · blue rows are category totals, red figures still owe against target</span></h3>
     <div style="overflow-x:auto;">
     <table class="responsive-table">
       <thead>
@@ -2170,7 +2207,7 @@ async function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, d
       ${categoryOrder.map(cat=>{
         const familyRows = byCategory[cat];
         // Skip the subtotal row when a category has only one family — nothing to subtotal
-        return (familyRows.length>1 ? categorySubtotalRow(cat, familyRows) : '') + familyRows.map(familyRow).join('');
+        return familyRows.map(familyRow).join('') + (familyRows.length>1 ? categorySubtotalRow(cat, familyRows) : '');
       }).join('')}
       </tbody>
     </table>
@@ -2192,20 +2229,34 @@ async function tvaDownloadCsv(name){
   const rows = state.tvaRows;
   const activeMonths = state.tvaActiveMonths || QUARTER_MONTHS[state.tvaQuarter];
   if(!rows) return;
-  const categories = await fetchHoFamilyCategories();
+  const [categories, familySeq, categorySeq] = await Promise.all([fetchHoFamilyCategories(), fetchHoFamilySequences(), fetchCategorySequences()]);
   const targetLabel = tvaTargetLabel(activeMonths, QUARTER_MONTHS[state.tvaQuarter]);
   let header = `Category,HO Family,${targetLabel} Qty,${targetLabel} Value`;
   activeMonths.forEach(m=>{ header += `,${m} Primary Orders Qty,${m} Primary Orders Value,${m} Primary Net Sales Qty,${m} Primary Net Sales Value,${m} Sec Net Sales Qty,${m} Sec Net Sales Value`; });
   header += ',Balance to Achieve Qty,Balance to Achieve Value,Deficit Secondary Qty,Deficit Secondary Value\n';
   let csv = header;
 
-  const sorted = [...rows].sort((a,b)=> a.family.localeCompare(b.family));
   const byCategory = {};
-  sorted.forEach(r=>{
+  rows.forEach(r=>{
     const cat = categories[r.family] || r.family;
     (byCategory[cat] = byCategory[cat]||[]).push(r);
   });
-  const categoryOrder = Object.keys(byCategory).sort((a,b)=>a.localeCompare(b));
+  Object.values(byCategory).forEach(list=>{
+    list.sort((a,b)=>{
+      const sa = familySeq[a.family], sb = familySeq[b.family];
+      if(sa!=null && sb!=null && sa!==sb) return sa-sb;
+      if(sa!=null && sb==null) return -1;
+      if(sa==null && sb!=null) return 1;
+      return a.family.localeCompare(b.family);
+    });
+  });
+  const categoryOrder = Object.keys(byCategory).sort((a,b)=>{
+    const sa = categorySeq[a], sb = categorySeq[b];
+    if(sa!=null && sb!=null && sa!==sb) return sa-sb;
+    if(sa!=null && sb==null) return -1;
+    if(sa==null && sb!=null) return 1;
+    return a.localeCompare(b);
+  });
 
   function familyLine(cat, r){
     let line = `"${cat}","${r.family}",${r.quarterTargetQty.toFixed(2)},${r.quarterTargetValue.toFixed(2)}`;
@@ -2239,6 +2290,7 @@ async function tvaDownloadCsv(name){
   categoryOrder.forEach(cat=>{
     const familyRows = byCategory[cat];
     familyRows.forEach(r=> csv += familyLine(cat, r));
+    if(familyRows.length>1) csv += categorySubtotalLine(cat, familyRows);
   });
 
   const blob = new Blob([csv], {type:'text/csv'});
@@ -2313,11 +2365,18 @@ async function loadTvaUploadView(){
   const body = document.getElementById('nsmBody');
   if(!state.tvaPriceList) state.tvaPriceList = await fetchHoFamilyPriceList();
   if(!state.tvaCategoryList) state.tvaCategoryList = await fetchHoFamilyCategoryList();
+  if(!state.tvaCategorySeqList) state.tvaCategorySeqList = await fetchCategorySequenceList();
   body.innerHTML = renderTvaUploadPanel();
 }
 async function fetchHoFamilyCategoryList(){
   if(!sb) return [];
-  const {data, error} = await sb.from('ho_family_category').select('*').order('ho_family');
+  const {data, error} = await sb.from('ho_family_category').select('*').order('sequence').order('ho_family');
+  if(error){ console.error(error); return []; }
+  return data||[];
+}
+async function fetchCategorySequenceList(){
+  if(!sb) return [];
+  const {data, error} = await sb.from('category_sequence').select('*').order('sequence').order('category');
   if(error){ console.error(error); return []; }
   return data||[];
 }
@@ -2399,39 +2458,91 @@ async function handleBulkPriceUpload(){
 
 function renderTvaCategoryPanel(){
   const list = state.tvaCategoryList || [];
+  const catSeqList = state.tvaCategorySeqList || [];
   const categories = [...new Set(list.map(r=>r.category))].sort();
   return `
   <div class="panel">
-    <h3>HO Family → Category Mapping <span class="cnt">${list.length} families · drives the "Total X" subtotal grouping everywhere</span></h3>
-    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Reassigning a family's category here immediately changes which "Total" subtotal it rolls up into — in every view and every CSV export, for every month, instantly. No re-upload needed.</p>
+    <h3>Category Order <span class="cnt">${catSeqList.length} categories · controls which "Total X" group appears first</span></h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Lower number = appears first. Ties break alphabetically. Leave gaps (10, 20, 30…) so you can slot a new category in between later without renumbering everything.</p>
     <table class="responsive-table">
-      <thead><tr><th>HO Family</th><th>Category</th><th></th></tr></thead>
+      <thead><tr><th>Category</th><th class="num">Sequence</th><th></th></tr></thead>
+      <tbody>
+      ${catSeqList.map((r,i)=>`<tr>
+        <td data-label="Category">${esc(r.category)}</td>
+        <td class="num" data-label="Sequence"><input id="catSeqInput${i}" type="number" value="${r.sequence}" style="width:90px;text-align:right;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
+        <td><button class="btn btn-primary btn-sm" onclick="handleSaveCategorySequence('${escJs(r.category)}', document.getElementById('catSeqInput${i}').value)">Save</button></td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+    <p style="font-size:12.5px;color:var(--muted);margin:10px 0 0;">Bulk: paste <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">Category, Sequence</code> one per line.</p>
+    <textarea id="bulkCatSeqInput" rows="4" placeholder="Pointer, 5
+Ball Pens, 10" style="width:100%;margin-top:6px;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
+    <button class="btn btn-primary" style="margin-top:10px;" onclick="handleBulkCategorySequenceUpload()">Update Order</button>
+    <div id="catSeqUploadStatus"></div>
+  </div>
+  <div class="panel">
+    <h3>HO Family → Category &amp; Order <span class="cnt">${list.length} families · order applies within each family's category</span></h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Reassigning a family's category, or its order within that category, applies instantly everywhere — every view and every CSV export, for every month. No re-upload needed.</p>
+    <table class="responsive-table">
+      <thead><tr><th>HO Family</th><th>Category</th><th class="num">Sequence</th><th></th></tr></thead>
       <tbody>
       ${list.map((r,i)=>`<tr>
         <td data-label="HO Family">${esc(r.ho_family)}</td>
-        <td data-label="Category"><input id="categoryInput${i}" list="tvaCategoryOptions" value="${esc(r.category)}" style="width:100%;max-width:240px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
-        <td><button class="btn btn-primary btn-sm" onclick="handleSaveCategory('${escJs(r.ho_family)}', document.getElementById('categoryInput${i}').value)">Save</button></td>
+        <td data-label="Category"><input id="categoryInput${i}" list="tvaCategoryOptions" value="${esc(r.category)}" style="width:100%;max-width:200px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
+        <td class="num" data-label="Sequence"><input id="familySeqInput${i}" type="number" value="${r.sequence}" style="width:80px;text-align:right;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
+        <td><button class="btn btn-primary btn-sm" onclick="handleSaveCategory('${escJs(r.ho_family)}', document.getElementById('categoryInput${i}').value, document.getElementById('familySeqInput${i}').value)">Save</button></td>
       </tr>`).join('')}
       </tbody>
     </table>
     <datalist id="tvaCategoryOptions">${categories.map(c=>`<option value="${esc(c)}">`).join('')}</datalist>
   </div>
   <div class="panel">
-    <h3>Bulk Update</h3>
-    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Paste one family per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">HO Family, Category</code> to reassign many at once.</p>
-    <textarea id="bulkCategoryInput" rows="6" placeholder="Pointer Wow, Pointer
-Pointer Metallic, Pointer" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
+    <h3>Bulk Update — Family Category &amp; Order</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Paste one family per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">HO Family, Category, Sequence</code> (sequence optional — leave it off to keep the current value).</p>
+    <textarea id="bulkCategoryInput" rows="6" placeholder="Pointer Wow, Pointer, 10
+Pointer Metallic, Pointer, 20" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
     <button class="btn btn-primary" style="margin-top:10px;" onclick="handleBulkCategoryUpload()">Update Categories</button>
     <div id="categoryUploadStatus"></div>
   </div>`;
 }
-async function handleSaveCategory(family, category){
+async function handleSaveCategory(family, category, sequence){
   category = category.trim();
   if(!category){ alert('Enter a category.'); return; }
-  const {error} = await sb.from('ho_family_category').upsert({ho_family:family, category}, {onConflict:'ho_family'});
+  const payload = {ho_family:family, category};
+  if(sequence!==undefined && sequence!=='') payload.sequence = Number(sequence);
+  const {error} = await sb.from('ho_family_category').upsert(payload, {onConflict:'ho_family'});
   if(error){ alert('Could not save: '+error.message); return; }
-  tvaCache.categories = null;
+  tvaCache.categories = null; tvaCache.familySequence = null;
   state.tvaCategoryList = await fetchHoFamilyCategoryList();
+  render();
+}
+async function handleSaveCategorySequence(category, sequence){
+  const seq = Number(sequence);
+  if(isNaN(seq)){ alert('Enter a valid number.'); return; }
+  const {error} = await sb.from('category_sequence').upsert({category, sequence:seq}, {onConflict:'category'});
+  if(error){ alert('Could not save: '+error.message); return; }
+  tvaCache.categorySequence = null;
+  state.tvaCategorySeqList = await fetchCategorySequenceList();
+  render();
+}
+async function handleBulkCategorySequenceUpload(){
+  const text = document.getElementById('bulkCatSeqInput').value;
+  if(!text.trim()){ alert('Paste at least one line.'); return; }
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  const rows = [], unmatched = [];
+  lines.forEach(line=>{
+    const parts = line.split(/[,\t]/).map(p=>p.trim());
+    const seq = Number(parts[1]);
+    if(parts.length<2 || isNaN(seq)){ unmatched.push(line); return; }
+    rows.push({category:parts[0], sequence:seq});
+  });
+  if(rows.length){
+    const {error} = await sb.from('category_sequence').upsert(rows, {onConflict:'category'});
+    if(error){ document.getElementById('catSeqUploadStatus').innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
+  }
+  tvaCache.categorySequence = null;
+  state.tvaCategorySeqList = await fetchCategorySequenceList();
+  document.getElementById('catSeqUploadStatus').innerHTML = `<div style="margin-top:10px;padding:10px;border-radius:8px;background:var(--green-bg);">${rows.length} updated.${unmatched.length?` ${unmatched.length} line(s) skipped.`:''}</div>`;
   render();
 }
 async function handleBulkCategoryUpload(){
@@ -2442,13 +2553,19 @@ async function handleBulkCategoryUpload(){
   lines.forEach(line=>{
     const parts = line.split(/[,\t]/).map(p=>p.trim());
     if(parts.length<2 || !parts[1]){ unmatched.push(line); return; }
-    rows.push({ho_family:parts[0], category:parts[1]});
+    const row = {ho_family:parts[0], category:parts[1]};
+    if(parts.length>=3 && parts[2]!==''){
+      const seq = Number(parts[2]);
+      if(isNaN(seq)){ unmatched.push(line); return; }
+      row.sequence = seq;
+    }
+    rows.push(row);
   });
   if(rows.length){
     const {error} = await sb.from('ho_family_category').upsert(rows, {onConflict:'ho_family'});
     if(error){ document.getElementById('categoryUploadStatus').innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
   }
-  tvaCache.categories = null;
+  tvaCache.categories = null; tvaCache.familySequence = null;
   state.tvaCategoryList = await fetchHoFamilyCategoryList();
   document.getElementById('categoryUploadStatus').innerHTML = `<div style="margin-top:10px;padding:10px;border-radius:8px;background:var(--green-bg);">${rows.length} updated.${unmatched.length?` ${unmatched.length} line(s) skipped (couldn't parse).`:''}</div>`;
   render();
