@@ -237,7 +237,8 @@ const USERS = {
   sajid:{password:'sajid2026', role:'rsm', rsmId:'sajid'},
   arif:{password:'arif2026', role:'rsm', rsmId:'arif'},
   nsm:{password:'nsm2026', role:'nsm'},
-  adnan:{password:'adnan2026', role:'admin'}
+  adnan:{password:'adnan2026', role:'admin'},
+  rashid:{password:'rashid2026', role:'cs'}
 };
 
 /* ============================= STATE ============================= */
@@ -745,7 +746,7 @@ function doLogin(){
     return;
   }
   state.loginError='';
-  const displayName = rec.rsmId ? TOWN_DATA[rec.rsmId].name : (rec.role==='admin' ? 'Sales Ops — Admin' : 'NSM — Head Office');
+  const displayName = rec.rsmId ? TOWN_DATA[rec.rsmId].name : (rec.role==='admin' ? 'Sales Ops — Admin' : rec.role==='cs' ? 'Rashid Iqbal — CS' : 'NSM — Head Office');
   state.user = {username:u, role:rec.role, rsmId:rec.rsmId||null, name: displayName};
   state.rsmView='today'; state.selectedTown=null; state.todayRecord=null; state.yesterdayRecord=null; state.mtdData=null;
   state.nsmView='daily'; state.nsmDate=todayStr(); state.nsmDailyRecords=null; state.nsmMtdData=null; state.expandedRsm=null;
@@ -1320,12 +1321,17 @@ function renderRsmMtd(){
 
 /* ============================= NSM SHELL ============================= */
 function renderNsmShell(){
-  const isAdmin = state.user.role==='admin';
+  const role = state.user.role;
+  const isAdmin = role==='admin';
+  const canUploadOverdue = role==='admin' || role==='cs';   // Rashid (CS) uploads overdue too, admin only otherwise
+  const canUploadTva = role==='admin';                       // price/category/target/achievement config — admin only
+  const canViewTva = role!=='cs';                            // Target vs Achievement hidden entirely from CS
+  const titleText = isAdmin ? 'Sales Ops — Admin View' : role==='cs' ? 'Head Office — CS View' : 'Head Office — NSM View';
   return `
   <div class="topbar">
     <div class="brand">
       <div class="brand-mark"><img src="dil_logo.png" alt="DOLLAR"></div>
-      <div class="brand-text"><div class="t1">${isAdmin?'Sales Ops — Admin View':'Head Office — NSM View'}</div><div class="t2">All regions · ${RSM_IDS.length} RSMs · 60 towns</div></div>
+      <div class="brand-text"><div class="t1">${titleText}</div><div class="t2">All regions · ${RSM_IDS.length} RSMs · 60 towns</div></div>
     </div>
     <div class="top-right">
       <div class="today-pill">${prettyDate(todayStr())}</div>
@@ -1336,9 +1342,9 @@ function renderNsmShell(){
     <div class="tabs desktop-tabs">
       <button class="tab ${state.nsmView==='daily'?'active':''}" onclick="setNsmView('daily')">Daily Dashboard</button>
       <button class="tab ${state.nsmView==='mtd'?'active':''}" onclick="setNsmView('mtd')">MTD Dashboard</button>
-      <button class="tab ${state.nsmView==='achievement'?'active':''}" onclick="setNsmView('achievement')">Target vs Achievement</button>
-      ${isAdmin ? `<button class="tab ${state.nsmView==='upload'?'active':''}" onclick="setNsmView('upload')">Upload Overdue</button>` : ''}
-      ${isAdmin ? `<button class="tab ${state.nsmView==='tvaupload'?'active':''}" onclick="setNsmView('tvaupload')">T v A Upload</button>` : ''}
+      ${canViewTva ? `<button class="tab ${state.nsmView==='achievement'?'active':''}" onclick="setNsmView('achievement')">Target vs Achievement</button>` : ''}
+      ${canUploadOverdue ? `<button class="tab ${state.nsmView==='upload'?'active':''}" onclick="setNsmView('upload')">Upload Overdue</button>` : ''}
+      ${canUploadTva ? `<button class="tab ${state.nsmView==='tvaupload'?'active':''}" onclick="setNsmView('tvaupload')">T v A Upload</button>` : ''}
     </div>
     <div id="nsmBody"><div class="loading">Loading…</div></div>
   </div>
@@ -1346,9 +1352,9 @@ function renderNsmShell(){
     <div class="bottom-nav-row">
       <button class="bottom-nav-item ${state.nsmView==='daily'?'active':''}" onclick="setNsmView('daily')"><span class="ic">●</span>Daily</button>
       <button class="bottom-nav-item ${state.nsmView==='mtd'?'active':''}" onclick="setNsmView('mtd')"><span class="ic">▤</span>MTD</button>
-      <button class="bottom-nav-item ${state.nsmView==='achievement'?'active':''}" onclick="setNsmView('achievement')"><span class="ic">◈</span>T v A</button>
-      ${isAdmin ? `<button class="bottom-nav-item ${state.nsmView==='upload'?'active':''}" onclick="setNsmView('upload')"><span class="ic">⬆</span>Upload</button>` : ''}
-      ${isAdmin ? `<button class="bottom-nav-item ${state.nsmView==='tvaupload'?'active':''}" onclick="setNsmView('tvaupload')"><span class="ic">⬆</span>T v A</button>` : ''}
+      ${canViewTva ? `<button class="bottom-nav-item ${state.nsmView==='achievement'?'active':''}" onclick="setNsmView('achievement')"><span class="ic">◈</span>T v A</button>` : ''}
+      ${canUploadOverdue ? `<button class="bottom-nav-item ${state.nsmView==='upload'?'active':''}" onclick="setNsmView('upload')"><span class="ic">⬆</span>Upload</button>` : ''}
+      ${canUploadTva ? `<button class="bottom-nav-item ${state.nsmView==='tvaupload'?'active':''}" onclick="setNsmView('tvaupload')"><span class="ic">⬆</span>T v A</button>` : ''}
     </div>
   </div>`;
 }
