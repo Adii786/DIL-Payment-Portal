@@ -218,12 +218,12 @@ const sb = SUPABASE_CONFIGURED ? supabase.createClient(SUPABASE_URL, SUPABASE_AN
 
 /* ============================= DATA MODEL ============================= */
 const TOWN_DATA = {
-  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad','Khanpur','Turbat'] },
+  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad','Khairpur','Turbat'] },
   jamal:   { name:'Jamal e Rabbi',   towns:['Multan','Dera Ghazi Khan','Muzaffargarh','Bahawalnagar','Chishtian','Bahawalpur','Ahmedpur East','Mian Channu','Vehari','Karachi'] },
   danish:  { name:'Danish Imran',    towns:['Lahore','Gujranwala','Kasur','Sheikhupura','Pattoki','Kamonki'] },
   qaiser:  { name:'Qaiser Raza Baig',towns:['Faisalabad','Sahiwal','Okara','Pak Pattan','Burewala'] },
   sajid:   { name:'Sajid Subhani',   towns:['Rawalpindi','Wah Cantt','Chakwal','Dina','Lalamusa','Bhimber','Gujrat','Sargodha','Mandi Bahauddin','Phalia','Jhang Saddar','Pirmahal','Mianwali','DI Khan','Bannu','Layyah','Hafizabad','Wazirabad','Sialkot','Narowal'] },
-  arif:    { name:'Arif Saeed',      towns:['Peshawar','Kohat','Mingora','Dir','Skardu','Gilgit','Mardan','Takht Bahi','Muzaffarabad','Abbottabad','Attock City','Sadda','Batgram','Haripur'] }
+  arif:    { name:'Arif Saeed',      towns:['Peshawar','Kohat','Mingora','Dir','Skardu','Gilgit','Mardan','Takht Bahi','Muzaffarabad','Abbottabad','Attock City','Haripur','Batgram'] }
 };
 const RSM_IDS = Object.keys(TOWN_DATA);
 const TOWN_TO_RSM = {};
@@ -2409,12 +2409,28 @@ function renderTvaAchievementUploadPanel(){
     ${result && result.kind==='achievement' ? renderTvaUploadResultBox(result) : ''}
   </div>`;
 }
+// Raw BI export files spell these 10 towns differently than this app's
+// canonical TOWN_DATA list — mapped directly from Current_town_names.xlsx
+// so future uploads work with the unmodified file, no manual editing needed.
+const TVA_TOWN_ALIASES = {
+  'bhawalnagar': 'Bahawalnagar',
+  'ahmed pur east': 'Ahmedpur East',
+  'mian chunnu': 'Mian Channu',
+  'vihari': 'Vehari',
+  'kamoki': 'Kamonki',
+  'pak patan sharif': 'Pak Pattan',
+  'rawal pindi': 'Rawalpindi',
+  'wah cantt.': 'Wah Cantt',
+  'dera ismail khan': 'DI Khan',
+  'takht bhai': 'Takht Bahi',
+};
 function tvaFindTownFromHeader(h){
   if(!h) return null;
   const s = String(h);
   const parts = s.includes('-') ? s.split('-').slice(1).join('-') : s;
   const cleaned = parts.replace(/\s*\([^)]*\)\s*$/,'').trim().replace(/,$/,'');
-  const hit = TOWN_TO_RSM[cleaned.toLowerCase()];
+  const aliased = TVA_TOWN_ALIASES[cleaned.toLowerCase()];
+  const hit = TOWN_TO_RSM[(aliased || cleaned).toLowerCase()];
   return hit ? hit.town : null;
 }
 async function handleTvaAchievementFileUpload(file){
