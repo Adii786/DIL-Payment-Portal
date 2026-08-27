@@ -223,7 +223,7 @@ const TOWN_DATA = {
   danish:  { name:'Danish Imran',    towns:['Lahore','Gujranwala','Kasur','Sheikhupura','Pattoki','Kamonki'] },
   qaiser:  { name:'Qaiser Raza Baig',towns:['Faisalabad','Sahiwal','Okara','Pak Pattan','Burewala'] },
   sajid:   { name:'Sajid Subhani',   towns:['Rawalpindi','Wah Cantt','Chakwal','Dina','Lalamusa','Bhimber','Gujrat','Sargodha','Mandi Bahauddin','Phalia','Jhang Saddar','Pirmahal','Mianwali','DI Khan','Bannu','Layyah','Hafizabad','Wazirabad','Sialkot','Narowal'] },
-  arif:    { name:'Arif Saeed',      towns:['Peshawar','Kohat','Mingora','Dir','Skardu','Gilgit','Mardan','Takht Bahi','Muzaffarabad','Abbottabad','Attock City','Sadda','Haripur','Batgram'] }
+  arif:    { name:'Arif Saeed',      towns:['Peshawar','Kohat','Mingora','Dir','Skardu','Gilgit','Mardan','Takht Bahi','Muzaffarabad','Abbottabad','Attock City','Sadda','Batgram','Haripur'] }
 };
 const RSM_IDS = Object.keys(TOWN_DATA);
 const TOWN_TO_RSM = {};
@@ -237,7 +237,7 @@ const USERS = {
   sajid:{password:'sajid2026', role:'rsm', rsmId:'sajid'},
   arif:{password:'arif2026', role:'rsm', rsmId:'arif'},
   nsm:{password:'nsm2026', role:'nsm'},
-  adnan:{password:'adnan20262030', role:'admin'},
+  adnan:{password:'adnan2026', role:'admin'},
   rashid:{password:'rashid2026', role:'cs'}
 };
 
@@ -261,9 +261,9 @@ let state = {
   nsmOverdueMap:null,     // NSM view: same, across all towns
   overdueUploadResult:null,
   pastDueDocxResult:null,
-  tvaQuarter:null, tvaMode:'volume', tvaSelectedTown:null, tvaRows:null, tvaActiveMonths:null, tvaExpandedRsm:null,
-  tvaNationalRows:null, tvaNationalActiveMonths:null,
-  tvaUploadSubTab:'price', tvaUploadResult:null, tvaPriceList:null, tvaCategoryList:null, tvaCategorySeqList:null,
+  tvaQuarter:null, tvaMode:'volume', tvaSelectedTown:null, tvaRows:null, tvaExpandedRsm:null,
+  tvaNationalRows:null,
+  tvaUploadSubTab:'hierarchy', tvaUploadResult:null, tvaHierarchyList:null, tvaFamilyMetaList:null, tvaHierarchyFilter:'',
   adminUploadSubTab:'docx',
   customerTownMapList:null,
   lastDocxInvoiceRows:null,
@@ -1676,87 +1676,64 @@ function refreshCurrentViewData(){
 document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') refreshCurrentViewData(); });
 window.addEventListener('pageshow', (e)=>{ if(e.persisted) refreshCurrentViewData(); });
 
-/* ============================= TARGET VS ACHIEVEMENT MODULE (Quarterly) ============================= */
-let tvaCache = { hierarchy:null, prices:null, categories:null, familySequence:null, categorySequence:null };
+/* ============================= TARGET VS ACHIEVEMENT MODULE (Primary-only, v4 hierarchy) ============================= */
+let tvaCache = { hierarchy:null, familyMeta:null };
 
-async function fetchProductHierarchyV2(){
-  if(tvaCache.hierarchy) return tvaCache.hierarchy;
+async function fetchProductHierarchyV4(force){
+  if(tvaCache.hierarchy && !force) return tvaCache.hierarchy;
   if(!sb) return {};
-  const {data, error} = await sb.from('product_hierarchy_v2').select('*');
+  const {data, error} = await sb.from('product_hierarchy_v4').select('*');
   if(error){ console.error(error); return {}; }
   const map = {};
-  (data||[]).forEach(r=> map[r.sku_code] = {sku_name:r.sku_name, ho_family:r.ho_family, target_family:r.target_family, uom:Number(r.uom)||1});
+  (data||[]).forEach(r=> map[r.sku_code] = {sku_name:r.sku_name, family:r.family});
   tvaCache.hierarchy = map;
   return map;
 }
-async function fetchHoFamilyPrices(force){
-  if(tvaCache.prices && !force) return tvaCache.prices;
+async function fetchFamilyMeta(force){
+  if(tvaCache.familyMeta && !force) return tvaCache.familyMeta;
   if(!sb) return {};
-  const {data, error} = await sb.from('ho_family_price').select('*');
+  const {data, error} = await sb.from('family_category').select('*');
   if(error){ console.error(error); return {}; }
   const map = {};
-  (data||[]).forEach(r=> map[r.ho_family] = Number(r.price)||0);
-  tvaCache.prices = map;
+  (data||[]).forEach(r=> map[r.family] = {
+    category: r.category, subtotalUom: r.subtotal_uom, price: Number(r.price)||0,
+    conversionFactor: r.conversion_factor!=null ? Number(r.conversion_factor) : null,
+    priceNeedsReview: !!r.price_needs_review
+  });
+  tvaCache.familyMeta = map;
   return map;
 }
-async function fetchHoFamilyCategories(){
-  if(tvaCache.categories) return tvaCache.categories;
+async function fetchQuarterlyTarget(quarter, town){
   if(!sb) return {};
-  const {data, error} = await sb.from('ho_family_category').select('*');
+  const {data, error} = await sb.from('quarterly_target').select('*').eq('quarter',quarter).eq('town',town);
   if(error){ console.error(error); return {}; }
   const map = {};
-  (data||[]).forEach(r=> map[r.ho_family] = r.category);
-  tvaCache.categories = map;
+  (data||[]).forEach(r=> map[r.family] = (map[r.family]||0) + Number(r.target_qty||0));
   return map;
 }
-async function fetchHoFamilySequences(){
-  if(tvaCache.familySequence) return tvaCache.familySequence;
+async function fetchQuarterlyTargetBulk(quarter, towns){
   if(!sb) return {};
-  const {data, error} = await sb.from('ho_family_category').select('ho_family,sequence');
-  if(error){ console.error(error); return {}; }
-  const map = {};
-  (data||[]).forEach(r=> map[r.ho_family] = Number(r.sequence)||0);
-  tvaCache.familySequence = map;
-  return map;
+  const data = await fetchAllPaged(()=> sb.from('quarterly_target').select('*').eq('quarter',quarter).in('town', towns));
+  const byTown = {};
+  data.forEach(r=>{ (byTown[r.town]=byTown[r.town]||{})[r.family] = (byTown[r.town][r.family]||0) + Number(r.target_qty||0); });
+  return byTown;
 }
-async function fetchCategorySequences(){
-  if(tvaCache.categorySequence) return tvaCache.categorySequence;
+async function fetchAchievementQtyV2(month, metric, town){
   if(!sb) return {};
-  const {data, error} = await sb.from('category_sequence').select('*');
-  if(error){ console.error(error); return {}; }
-  const map = {};
-  (data||[]).forEach(r=> map[r.category] = Number(r.sequence)||0);
-  tvaCache.categorySequence = map;
-  return map;
-}
-async function fetchMonthlyTarget(month, town){
-  if(!sb) return {};
-  const {data, error} = await sb.from('monthly_target').select('*').eq('month',month).eq('town',town);
-  if(error){ console.error(error); return {}; }
-  const map = {};
-  (data||[]).forEach(r=> map[r.target_family] = (map[r.target_family]||0) + Number(r.target_qty||0));
-  return map;
-}
-async function fetchAchievementQty(table, month, town, metric){
-  if(!sb) return {};
-  let q = sb.from(table).select('*').eq('month',month).eq('town',town);
-  if(metric) q = q.eq('metric', metric);
-  const {data, error} = await q;
+  const {data, error} = await sb.from('monthly_achievement_primary_v2').select('*').eq('month',month).eq('metric',metric).eq('town',town);
   if(error){ console.error(error); return {}; }
   const map = {};
   (data||[]).forEach(r=> map[r.sku_code] = (map[r.sku_code]||0) + Number(r.qty||0));
   return map;
 }
-
-/* Bulk equivalents — fetch ALL towns in a scope with ONE query instead of one
-   query per town. This is what the combined territory view uses: for a
-   20-town RSM, this cuts ~240 sequential queries down to a fixed ~12,
-   regardless of how many towns are in scope. */
-/* Supabase caps a single response at 1000 rows by default — the bulk
-   fetchers below can legitimately need more than that (up to ~22,500 rows
-   for SKU-level achievement across all 63 towns in one month), so they page
-   through in chunks of 1000 until a page comes back short, guaranteeing the
-   full result regardless of how large the table grows. */
+async function fetchAchievementQtyV2Bulk(month, metric, towns){
+  if(!sb) return {};
+  const data = await fetchAllPaged(()=> sb.from('monthly_achievement_primary_v2').select('*').eq('month',month).eq('metric',metric).in('town', towns));
+  const byTown = {};
+  data.forEach(r=>{ (byTown[r.town]=byTown[r.town]||{})[r.sku_code] = (byTown[r.town][r.sku_code]||0) + Number(r.qty||0); });
+  return byTown;
+}
+/* Paginates past Supabase's 1000-row response cap — see earlier fix, same principle applies here. */
 async function fetchAllPaged(queryBuilderFn){
   const pageSize = 1000;
   let offset = 0, all = [];
@@ -1769,30 +1746,7 @@ async function fetchAllPaged(queryBuilderFn){
   }
   return all;
 }
-async function fetchMonthlyTargetBulk(month, towns){
-  if(!sb) return {};
-  const data = await fetchAllPaged(()=> sb.from('monthly_target').select('*').eq('month',month).in('town', towns));
-  const byTown = {};
-  data.forEach(r=>{
-    (byTown[r.town] = byTown[r.town]||{})[r.target_family] = (byTown[r.town][r.target_family]||0) + Number(r.target_qty||0);
-  });
-  return byTown;
-}
-async function fetchAchievementQtyBulk(table, month, towns, metric){
-  if(!sb) return {};
-  const data = await fetchAllPaged(()=>{
-    let q = sb.from(table).select('*').eq('month',month).in('town', towns);
-    if(metric) q = q.eq('metric', metric);
-    return q;
-  });
-  const byTown = {};
-  data.forEach(r=>{
-    (byTown[r.town] = byTown[r.town]||{})[r.sku_code] = (byTown[r.town][r.sku_code]||0) + Number(r.qty||0);
-  });
-  return byTown;
-}
 
-/* ---- Quarters: Jul-Sep = Q1, Oct-Dec = Q2, Jan-Mar = Q3, Apr-Jun = Q4 (fiscal year starting July) ---- */
 const QUARTER_MONTHS = {
   '2026-Q1': ['2026-07','2026-08','2026-09'],
   '2026-Q2': ['2026-10','2026-11','2026-12'],
@@ -1800,11 +1754,7 @@ const QUARTER_MONTHS = {
   '2027-Q4': ['2027-04','2027-05','2027-06'],
 };
 const TVA_QUARTER_OPTIONS = Object.keys(QUARTER_MONTHS);
-const TVA_MONTH_OPTIONS = Object.values(QUARTER_MONTHS).flat(); // flat month list, for upload dropdowns (achievement/target stay monthly)
-function tvaMonthLabel(m){
-  const [y,mo] = m.split('-');
-  return new Date(Number(y), Number(mo)-1, 1).toLocaleDateString('en-GB',{month:'long', year:'numeric'});
-}
+const TVA_MONTH_OPTIONS = Object.values(QUARTER_MONTHS).flat();
 function tvaQuarterLabel(q){
   const months = QUARTER_MONTHS[q];
   const label = m => new Date(Number(m.split('-')[0]), Number(m.split('-')[1])-1, 1).toLocaleDateString('en-GB',{month:'short'});
@@ -1814,208 +1764,113 @@ function tvaMonthShort(m){
   const [y,mo] = m.split('-');
   return new Date(Number(y), Number(mo)-1, 1).toLocaleDateString('en-GB',{month:'short', year:'2-digit'});
 }
+function tvaMonthLabel(m){
+  const [y,mo] = m.split('-');
+  return new Date(Number(y), Number(mo)-1, 1).toLocaleDateString('en-GB',{month:'long', year:'numeric'});
+}
 function tvaFmtQty(n){ n=Number(n)||0; return Math.round(n).toLocaleString('en-US'); }
 function tvaFmtRs(n){ n=Number(n)||0; return 'Rs '+Math.round(n).toLocaleString('en-US'); }
 
-/* Rolls up every HO family for one town/quarter: quarter target, plus each
-   month's Primary Net Orders / Primary Net Sales / Secondary Net Sales,
-   and the two deficit columns (Net Sales only, per your confirmation). */
-async function computeQuarterlyRollup(quarter, town){
+/* Which months in this quarter have ANY achievement (orders) uploaded yet,
+   company-wide — same "active months" concept as before, but now gated on
+   achievement data rather than target (per your point 14: Sept shows once
+   at least orders are uploaded for it). Cached per quarter. */
+let tvaActiveMonthsCache = {};
+async function getActiveMonths(quarter){
+  if(tvaActiveMonthsCache[quarter]) return tvaActiveMonthsCache[quarter];
   const months = QUARTER_MONTHS[quarter];
-  const [hierarchy, prices] = await Promise.all([fetchProductHierarchyV2(), fetchHoFamilyPrices()]);
-
-  const targetMaps = {};
-  const ordersMaps = {}, salesMaps = {}, secMaps = {};
-  await Promise.all(months.map(async m=>{
-    const [t, o, s, sec] = await Promise.all([
-      fetchMonthlyTarget(m, town),
-      fetchAchievementQty('monthly_achievement_primary', m, town, 'orders'),
-      fetchAchievementQty('monthly_achievement_primary', m, town, 'sales'),
-      fetchAchievementQty('monthly_achievement_secondary', m, town)
-    ]);
-    targetMaps[m]=t; ordersMaps[m]=o; salesMaps[m]=s; secMaps[m]=sec;
-  }));
-
-  const familyOrder = [];
-  const skusByFamily = {};
-  const seenFamily = new Set();
-  Object.entries(hierarchy).forEach(([sku, meta])=>{
-    if(!seenFamily.has(meta.ho_family)){ seenFamily.add(meta.ho_family); familyOrder.push(meta.ho_family); }
-    (skusByFamily[meta.ho_family] = skusByFamily[meta.ho_family]||[]).push(sku);
-  });
-  const firstFamilyForTargetFamily = {};
-  familyOrder.forEach(fam=>{
-    const tfs = new Set(skusByFamily[fam].map(sku=>hierarchy[sku].target_family));
-    tfs.forEach(tf=>{ if(!(tf in firstFamilyForTargetFamily)) firstFamilyForTargetFamily[tf] = fam; });
-  });
-
-  const rows = familyOrder.map((fam)=>{
-    const skus = skusByFamily[fam];
-    const price = prices[fam] || 0;
-
-    let quarterTarget = 0;
-    months.forEach(m=>{
-      const tfSeen = new Set();
-      skus.forEach(sku=>{
-        const tf = hierarchy[sku].target_family;
-        if(tfSeen.has(tf)) return;
-        tfSeen.add(tf);
-        if(firstFamilyForTargetFamily[tf] === fam) quarterTarget += (targetMaps[m][tf]||0);
-      });
-    });
-
-    const monthData = months.map(m=>{
-      let orders=0, sales=0, sec=0;
-      skus.forEach(sku=>{
-        const uom = hierarchy[sku].uom || 1;
-        orders += (ordersMaps[m][sku]||0) / uom;
-        sales += (salesMaps[m][sku]||0) / uom;
-        sec += (secMaps[m][sku]||0) / uom;
-      });
-      return {month:m, orders, sales, sec};
-    });
-
-    const totalSalesQty = monthData.reduce((s,md)=>s+md.sales,0);
-    const totalSecQty = monthData.reduce((s,md)=>s+md.sec,0);
-    const deficitPrimaryQty = totalSalesQty - quarterTarget;
-    const deficitSecondaryQty = totalSecQty - quarterTarget;
-
-    return {
-      family: fam, price,
-      quarterTargetQty: quarterTarget, quarterTargetValue: quarterTarget*price,
-      months: monthData.map(md=>({
-        month: md.month, ordersQty: md.orders, ordersValue: md.orders*price,
-        salesQty: md.sales, salesValue: md.sales*price, secQty: md.sec, secValue: md.sec*price
-      })),
-      deficitPrimaryQty, deficitPrimaryValue: deficitPrimaryQty*price,
-      deficitSecondaryQty, deficitSecondaryValue: deficitSecondaryQty*price
-    };
-  });
-  return rows;
-}
-
-/* Sums per-family figures across several towns in ONE pass — used for the
-   RSM/territory "combined" view (fix #3, #4). Uses the bulk fetchers above
-   so this stays a fixed ~12 queries no matter how many towns are in scope,
-   instead of looping a full per-town computation for each one. */
-async function computeQuarterlyRollupCombined(quarter, towns){
-  const months = QUARTER_MONTHS[quarter];
-  const [hierarchy, prices] = await Promise.all([fetchProductHierarchyV2(), fetchHoFamilyPrices()]);
-
-  const targetByTownByMonth = {}, ordersByTownByMonth = {}, salesByTownByMonth = {}, secByTownByMonth = {};
-  await Promise.all(months.map(async m=>{
-    const [t, o, s, sec] = await Promise.all([
-      fetchMonthlyTargetBulk(m, towns),
-      fetchAchievementQtyBulk('monthly_achievement_primary', m, towns, 'orders'),
-      fetchAchievementQtyBulk('monthly_achievement_primary', m, towns, 'sales'),
-      fetchAchievementQtyBulk('monthly_achievement_secondary', m, towns)
-    ]);
-    targetByTownByMonth[m]=t; ordersByTownByMonth[m]=o; salesByTownByMonth[m]=s; secByTownByMonth[m]=sec;
-  }));
-
-  const familyOrder = [];
-  const skusByFamily = {};
-  const seenFamily = new Set();
-  Object.entries(hierarchy).forEach(([sku, meta])=>{
-    if(!seenFamily.has(meta.ho_family)){ seenFamily.add(meta.ho_family); familyOrder.push(meta.ho_family); }
-    (skusByFamily[meta.ho_family] = skusByFamily[meta.ho_family]||[]).push(sku);
-  });
-  const firstFamilyForTargetFamily = {};
-  familyOrder.forEach(fam=>{
-    const tfs = new Set(skusByFamily[fam].map(sku=>hierarchy[sku].target_family));
-    tfs.forEach(tf=>{ if(!(tf in firstFamilyForTargetFamily)) firstFamilyForTargetFamily[tf] = fam; });
-  });
-
-  return familyOrder.map(fam=>{
-    const skus = skusByFamily[fam];
-    const price = prices[fam] || 0;
-
-    let quarterTarget = 0;
-    towns.forEach(town=>{
-      months.forEach(m=>{
-        const tMap = (targetByTownByMonth[m]||{})[town] || {};
-        const tfSeen = new Set();
-        skus.forEach(sku=>{
-          const tf = hierarchy[sku].target_family;
-          if(tfSeen.has(tf)) return;
-          tfSeen.add(tf);
-          if(firstFamilyForTargetFamily[tf] === fam) quarterTarget += (tMap[tf]||0);
-        });
-      });
-    });
-
-    const monthData = months.map(m=>{
-      let orders=0, sales=0, sec=0;
-      towns.forEach(town=>{
-        const oMap = (ordersByTownByMonth[m]||{})[town] || {};
-        const sMap = (salesByTownByMonth[m]||{})[town] || {};
-        const secMap = (secByTownByMonth[m]||{})[town] || {};
-        skus.forEach(sku=>{
-          const uom = hierarchy[sku].uom || 1;
-          orders += (oMap[sku]||0) / uom;
-          sales += (sMap[sku]||0) / uom;
-          sec += (secMap[sku]||0) / uom;
-        });
-      });
-      return {month:m, orders, sales, sec};
-    });
-
-    const totalSalesQty = monthData.reduce((s,md)=>s+md.sales,0);
-    const totalSecQty = monthData.reduce((s,md)=>s+md.sec,0);
-    const deficitPrimaryQty = totalSalesQty - quarterTarget;
-    const deficitSecondaryQty = totalSecQty - quarterTarget;
-
-    return {
-      family: fam, price,
-      quarterTargetQty: quarterTarget, quarterTargetValue: quarterTarget*price,
-      months: monthData.map(md=>({
-        month: md.month, ordersQty: md.orders, ordersValue: md.orders*price,
-        salesQty: md.sales, salesValue: md.sales*price, secQty: md.sec, secValue: md.sec*price
-      })),
-      deficitPrimaryQty, deficitPrimaryValue: deficitPrimaryQty*price,
-      deficitSecondaryQty, deficitSecondaryValue: deficitSecondaryQty*price
-    };
-  });
-}
-
-/* Which months in this quarter actually have target data uploaded yet, for
-   this town/these towns — drives the dynamic "July & Aug Target" label and
-   hides not-yet-relevant month columns (fix #1). Falls back to showing at
-   least the first month if nothing's uploaded yet, so the screen isn't empty. */
-async function fetchActiveMonths(quarter, towns){
-  const months = QUARTER_MONTHS[quarter];
-  const townList = Array.isArray(towns) ? towns : [towns];
-  if(!sb) return months;
-  // Check each candidate month's existence directly (limit 1) rather than
-  // pulling every matching row and inspecting client-side — with a large
-  // table, .in('town', 63 towns) can return more rows than Supabase's
-  // default 1000-row cap, silently truncating the result and making a
-  // real month look "not uploaded yet" if it wasn't in the truncated slice.
   const checks = await Promise.all(months.map(async m=>{
-    const {data, error} = await sb.from('monthly_target').select('month').eq('month', m).in('town', townList).limit(1);
+    const {data, error} = await sb.from('monthly_achievement_primary_v2').select('month').eq('month', m).eq('metric','orders').limit(1);
     if(error){ console.error(error); return null; }
     return (data && data.length) ? m : null;
   }));
   const active = checks.filter(Boolean);
-  return active.length ? active : [months[0]];
-}
-/* Which months are "live" company-wide for this quarter — used everywhere
-   (national, RSM-combined, single town) so every screen shows the same set
-   of month columns, instead of each scope deciding independently based on
-   just its own towns' upload completeness. Cached per quarter since it only
-   changes when a new month's target gets uploaded somewhere. */
-let tvaGlobalActiveMonthsCache = {};
-async function getGlobalActiveMonths(quarter){
-  if(tvaGlobalActiveMonthsCache[quarter]) return tvaGlobalActiveMonthsCache[quarter];
-  const months = await fetchActiveMonths(quarter, ALL_TOWNS_FLAT());
-  tvaGlobalActiveMonthsCache[quarter] = months;
-  return months;
-}
-function tvaTargetLabel(activeMonths, allMonths){
-  if(activeMonths.length === allMonths.length) return `${tvaQuarterLabel(state.tvaQuarter)} Target`;
-  return activeMonths.map(m=>tvaMonthShort(m).split(' ')[0]).join(' & ') + ' Target';
+  const result = active.length ? active : [months[0]];
+  tvaActiveMonthsCache[quarter] = result;
+  return result;
 }
 
+/* Core rollup: one row per family, target + each active month's Orders/Sales,
+   Total (= sum of Net Sales only, per your confirmation), Var% vs target. */
+async function computeRollup(quarter, town){
+  const activeMonths = await getActiveMonths(quarter);
+  const [hierarchy, familyMeta, target] = await Promise.all([
+    fetchProductHierarchyV4(), fetchFamilyMeta(), fetchQuarterlyTarget(quarter, town)
+  ]);
+  const ordersMaps = {}, salesMaps = {};
+  await Promise.all(activeMonths.map(async m=>{
+    ordersMaps[m] = await fetchAchievementQtyV2(m, 'orders', town);
+    salesMaps[m] = await fetchAchievementQtyV2(m, 'sales', town);
+  }));
+  return buildRollupRows(hierarchy, familyMeta, {[town]: target}, ordersMaps, salesMaps, activeMonths, town);
+}
+
+/* Combined (multi-town) rollup — used for RSM-territory and national views.
+   Uses bulk fetchers so it stays a fixed number of queries regardless of
+   how many towns are in scope. */
+async function computeRollupCombined(quarter, towns){
+  const activeMonths = await getActiveMonths(quarter);
+  const [hierarchy, familyMeta] = await Promise.all([fetchProductHierarchyV4(), fetchFamilyMeta()]);
+  const targetByTown = await fetchQuarterlyTargetBulk(quarter, towns);
+  const ordersMaps = {}, salesMaps = {};
+  await Promise.all(activeMonths.map(async m=>{
+    ordersMaps[m] = await fetchAchievementQtyV2Bulk(m, 'orders', towns);
+    salesMaps[m] = await fetchAchievementQtyV2Bulk(m, 'sales', towns);
+  }));
+  // Sum target across all towns in scope
+  const targetSummed = {};
+  towns.forEach(t=>{
+    const tMap = targetByTown[t] || {};
+    Object.entries(tMap).forEach(([fam,val])=>{ targetSummed[fam] = (targetSummed[fam]||0) + val; });
+  });
+  // Sum achievement across all towns per month
+  const ordersSummed = {}, salesSummed = {};
+  activeMonths.forEach(m=>{
+    ordersSummed[m] = {}; salesSummed[m] = {};
+    towns.forEach(t=>{
+      const oMap = (ordersMaps[m]||{})[t] || {};
+      const sMap = (salesMaps[m]||{})[t] || {};
+      Object.entries(oMap).forEach(([sku,val])=>{ ordersSummed[m][sku] = (ordersSummed[m][sku]||0) + val; });
+      Object.entries(sMap).forEach(([sku,val])=>{ salesSummed[m][sku] = (salesSummed[m][sku]||0) + val; });
+    });
+  });
+  return buildRollupRows(hierarchy, familyMeta, {__combined__: targetSummed}, ordersSummed, salesSummed, activeMonths, '__combined__');
+}
+
+function buildRollupRows(hierarchy, familyMeta, targetByScope, ordersMaps, salesMaps, activeMonths, scopeKey){
+  const target = targetByScope[scopeKey] || {};
+  const familyOrder = [];
+  const skusByFamily = {};
+  const seen = new Set();
+  Object.entries(hierarchy).forEach(([sku, meta])=>{
+    if(!seen.has(meta.family)){ seen.add(meta.family); familyOrder.push(meta.family); }
+    (skusByFamily[meta.family] = skusByFamily[meta.family]||[]).push(sku);
+  });
+  return familyOrder.map(fam=>{
+    const skus = skusByFamily[fam] || [];
+    const meta = familyMeta[fam] || {category:fam, subtotalUom:'pcs', price:0, conversionFactor:null};
+    const price = meta.price;
+    const targetQty = target[fam] || 0;
+    const monthData = activeMonths.map(m=>{
+      let orders=0, sales=0;
+      skus.forEach(sku=>{
+        orders += (ordersMaps[m]||{})[sku] || 0;
+        sales += (salesMaps[m]||{})[sku] || 0;
+      });
+      return {month:m, ordersQty:orders, ordersValue:orders*price, salesQty:sales, salesValue:sales*price};
+    });
+    const totalSalesQty = monthData.reduce((s,md)=>s+md.salesQty,0);
+    const totalSalesValue = totalSalesQty*price;
+    const targetValue = targetQty*price;
+    const varPct = targetQty !== 0 ? (totalSalesQty - targetQty) / targetQty : null;
+    return {
+      family: fam, category: meta.category, subtotalUom: meta.subtotalUom,
+      conversionFactor: meta.conversionFactor, price,
+      targetQty, targetValue, months: monthData,
+      totalSalesQty, totalSalesValue, varPct
+    };
+  });
+}
 /* ---- RSM view: combined (all own towns) first, drill into a town from there ---- */
 async function loadRsmAchievementView(){
   const body = document.getElementById('rsmBody');
@@ -2023,23 +1878,14 @@ async function loadRsmAchievementView(){
   const towns = TOWN_DATA[state.user.rsmId].towns;
   try{
     if(state.tvaSelectedTown){
-      if(!state.tvaRows){
-        state.tvaRows = await computeQuarterlyRollup(state.tvaQuarter, state.tvaSelectedTown);
-        state.tvaActiveMonths = await getGlobalActiveMonths(state.tvaQuarter);
-      }
-      body.innerHTML = await renderTvaScreen({
-        title: state.tvaSelectedTown, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
-        onBack: 'tvaBackToGrid()', townsBelow: null, downloadName: state.tvaSelectedTown
-      });
+      if(!state.tvaRows) state.tvaRows = await computeRollup(state.tvaQuarter, state.tvaSelectedTown);
+      body.innerHTML = await renderTvaScreen({title: state.tvaSelectedTown, rows: state.tvaRows, onBack:'tvaBackToGrid()', townsBelow:null, downloadName: state.tvaSelectedTown});
     } else {
       if(!state.tvaRows){
-        state.tvaRows = await computeQuarterlyRollupCombined(state.tvaQuarter, towns);
-        state.tvaActiveMonths = await getGlobalActiveMonths(state.tvaQuarter);
+        body.innerHTML = '<div class="loading">Loading…</div>';
+        state.tvaRows = await computeRollupCombined(state.tvaQuarter, towns);
       }
-      body.innerHTML = await renderTvaScreen({
-        title: `${state.user.name} — All Towns`, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
-        onBack: null, townsBelow: towns, downloadName: state.user.name
-      });
+      body.innerHTML = await renderTvaScreen({title: `${state.user.name} — All Towns`, rows: state.tvaRows, onBack:null, townsBelow: towns, downloadName: state.user.name});
     }
   }catch(e){
     body.innerHTML = `<div class="err">Could not load Target vs Achievement: ${esc(e.message||String(e))}. <button class="link-btn" onclick="state.tvaRows=null;render();">Retry</button></div>`;
@@ -2062,122 +1908,80 @@ function renderTvaQuarterSelector(){
     </div>
   </div>`;
 }
-function tvaChangeQuarter(q){ state.tvaQuarter=q; state.tvaRows=null; state.tvaActiveMonths=null; state.tvaNationalRows=null; state.tvaNationalActiveMonths=null; render(); }
+function tvaChangeQuarter(q){ state.tvaQuarter=q; state.tvaRows=null; state.tvaNationalRows=null; render(); }
 function tvaChangeMode(m){ state.tvaMode=m; render(); }
-function tvaSelectTown(t){ state.tvaSelectedTown=t; state.tvaRows=null; state.tvaActiveMonths=null; render(); }
-function tvaBackToGrid(){ state.tvaSelectedTown=null; state.tvaRows=null; state.tvaActiveMonths=null; render(); }
+function tvaSelectTown(t){ state.tvaSelectedTown=t; state.tvaRows=null; render(); }
+function tvaBackToGrid(){ state.tvaSelectedTown=null; state.tvaRows=null; render(); }
 
-/* Shared screen: summary cards + HO-family table (sorted A→Z), optionally
-   followed by a "tap a town" grid underneath when viewing a combined scope. */
-/* Balance to Achieve: for every active month except the most recent, count
-   Primary Net Sales (finalized/actual); for the most recent active month,
-   count Primary Orders instead (since sales/invoicing hasn't caught up for
-   the current month yet). Balance = Target − that blended achieved figure —
-   positive means still short of target, 0 or negative means target is met. */
-function computeBalanceToAchieve(row, activeMonths){
-  if(!activeMonths.length) return {qty:0, value:0};
-  const lastMonth = activeMonths[activeMonths.length-1];
-  let achievedQty = 0, achievedValue = 0;
-  activeMonths.forEach(m=>{
-    const md = row.months.find(x=>x.month===m);
-    if(!md) return;
-    if(m===lastMonth){ achievedQty += md.ordersQty; achievedValue += md.ordersValue; }
-    else { achievedQty += md.salesQty; achievedValue += md.salesValue; }
-  });
-  return { qty: row.quarterTargetQty - achievedQty, value: row.quarterTargetValue - achievedValue };
+/* Converts a raw pcs quantity into a category's display unit — pcs (as-is),
+   gross (÷144), or litres/kg (× conversion_factor ÷ 1000). Only used for the
+   category SUBTOTAL row — individual family rows always show plain pcs. */
+function convertForSubtotal(qty, uom, conversionFactor){
+  if(uom === 'gross') return qty / 144;
+  if((uom === 'litres' || uom === 'kg') && conversionFactor) return (qty * conversionFactor) / 1000;
+  return qty;
 }
 
-async function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, downloadName}){
+function renderTvaScreen_body(rows, title, onBack, townsBelow, downloadName){
   const isVal = state.tvaMode==='value';
   const fmt = isVal ? tvaFmtRs : tvaFmtQty;
-  const allMonths = QUARTER_MONTHS[state.tvaQuarter];
-  const [categories, familySeq, categorySeq] = await Promise.all([fetchHoFamilyCategories(), fetchHoFamilySequences(), fetchCategorySequences()]);
-  const targetLabel = tvaTargetLabel(activeMonths, allMonths);
-
-  // Group into categories (DCM Format subtotal grouping); category order and
-  // family-within-category order both follow your configured sequence
-  // (Category Config admin panel), falling back to A→Z for anything unset.
+  const sorted = [...rows].sort((a,b)=> a.family.localeCompare(b.family));
   const byCategory = {};
-  rows.forEach(r=>{
-    const cat = categories[r.family] || r.family;
-    (byCategory[cat] = byCategory[cat]||[]).push(r);
-  });
-  Object.values(byCategory).forEach(list=>{
-    list.sort((a,b)=>{
-      const sa = familySeq[a.family], sb = familySeq[b.family];
-      if(sa!=null && sb!=null && sa!==sb) return sa-sb;
-      if(sa!=null && sb==null) return -1;
-      if(sa==null && sb!=null) return 1;
-      return a.family.localeCompare(b.family);
-    });
-  });
-  const categoryOrder = Object.keys(byCategory).sort((a,b)=>{
-    const sa = categorySeq[a], sb = categorySeq[b];
-    if(sa!=null && sb!=null && sa!==sb) return sa-sb;
-    if(sa!=null && sb==null) return -1;
-    if(sa==null && sb!=null) return 1;
-    return a.localeCompare(b);
-  });
-  const sorted = categoryOrder.flatMap(cat=>byCategory[cat]); // for the summary cards' totals below
+  sorted.forEach(r=> (byCategory[r.category] = byCategory[r.category]||[]).push(r));
+  const categoryOrder = Object.keys(byCategory).sort((a,b)=>a.localeCompare(b));
+  const activeMonths = rows.length ? rows[0].months.map(m=>m.month) : [];
 
-  let totTarget=0, totBalance=0, totDefS=0;
-  const totMonth = activeMonths.map(()=>({orders:0,sales:0,sec:0}));
+  let totTarget=0, totSales=0, totDeficit=0;
   sorted.forEach(r=>{
-    totTarget += isVal?r.quarterTargetValue:r.quarterTargetQty;
-    const bal = computeBalanceToAchieve(r, activeMonths);
-    totBalance += isVal?bal.value:bal.qty;
-    totDefS += isVal?r.deficitSecondaryValue:r.deficitSecondaryQty;
-    activeMonths.forEach((m,i)=>{
-      const md = r.months.find(x=>x.month===m);
-      if(!md) return;
-      totMonth[i].orders += isVal?md.ordersValue:md.ordersQty;
-      totMonth[i].sales += isVal?md.salesValue:md.salesQty;
-      totMonth[i].sec += isVal?md.secValue:md.secQty;
-    });
+    totTarget += isVal? r.targetValue : r.targetQty;
+    totSales += isVal? r.totalSalesValue : r.totalSalesQty;
   });
+  totDeficit = totSales - totTarget;
 
   function familyRow(r){
-    const target = isVal?r.quarterTargetValue:r.quarterTargetQty;
-    const bal = computeBalanceToAchieve(r, activeMonths);
-    const balVal = isVal?bal.value:bal.qty;
-    const defS = isVal?r.deficitSecondaryValue:r.deficitSecondaryQty;
-    const stillOwed = balVal>0;
+    const target = isVal? r.targetValue : r.targetQty;
+    const total = isVal? r.totalSalesValue : r.totalSalesQty;
+    const varPct = r.varPct;
+    const behind = varPct!=null && varPct < 0;
     return `<tr>
-      <td data-label="HO Family" style="padding-left:22px;">${esc(r.family)}</td>
-      <td class="num" data-label="${esc(targetLabel)}">${fmt(target)}</td>
-      ${activeMonths.map(m=>{
-        const md = r.months.find(x=>x.month===m) || {ordersQty:0,ordersValue:0,salesQty:0,salesValue:0,secQty:0,secValue:0};
-        return `
-        <td class="num" data-label="${tvaMonthShort(m)} Primary Orders">${fmt(isVal?md.ordersValue:md.ordersQty)}</td>
-        <td class="num" data-label="${tvaMonthShort(m)} Primary Net Sales">${fmt(isVal?md.salesValue:md.salesQty)}</td>
-        <td class="num" data-label="${tvaMonthShort(m)} Sec. Net Sales">${fmt(isVal?md.secValue:md.secQty)}</td>`;
-      }).join('')}
-      <td class="num" data-label="Balance to Achieve" style="${stillOwed?'color:var(--red);font-weight:700;':''}">${fmt(balVal)}</td>
-      <td class="num" data-label="Deficit Secondary" style="${defS<0?'color:var(--red);font-weight:700;':''}">${fmt(defS)}</td>
+      <td data-label="Product">${esc(r.family)}</td>
+      <td data-label="UOM">pcs</td>
+      <td class="num" data-label="Sales Quota">${fmt(target)}</td>
+      ${r.months.map(md=>`
+        <td class="num" data-label="${tvaMonthShort(md.month)} Orders">${fmt(isVal?md.ordersValue:md.ordersQty)}</td>
+        <td class="num" data-label="${tvaMonthShort(md.month)} Sales">${fmt(isVal?md.salesValue:md.salesQty)}</td>`).join('')}
+      <td class="num" data-label="Total Net Sales">${fmt(total)}</td>
+      <td class="num" data-label="Var %" style="${behind?'color:var(--red);font-weight:700;':''}">${varPct!=null ? (varPct*100).toFixed(1)+'%' : '—'}</td>
     </tr>`;
   }
   function categorySubtotalRow(cat, familyRows){
-    let ct=0, cb=0, cd=0;
-    const cm = activeMonths.map(()=>({orders:0,sales:0,sec:0}));
+    const uom = familyRows[0].subtotalUom;
+    const convFactorFor = r => r.conversionFactor;
+    let ct=0, cs=0;
+    const cm = activeMonths.map(()=>({orders:0,sales:0}));
     familyRows.forEach(r=>{
-      ct += isVal?r.quarterTargetValue:r.quarterTargetQty;
-      const bal = computeBalanceToAchieve(r, activeMonths);
-      cb += isVal?bal.value:bal.qty;
-      cd += isVal?r.deficitSecondaryValue:r.deficitSecondaryQty;
-      activeMonths.forEach((m,i)=>{
-        const md = r.months.find(x=>x.month===m);
-        if(!md) return;
-        cm[i].orders += isVal?md.ordersValue:md.ordersQty;
-        cm[i].sales += isVal?md.salesValue:md.salesQty;
-        cm[i].sec += isVal?md.secValue:md.secQty;
-      });
+      if(isVal){
+        ct += r.targetValue; cs += r.totalSalesValue;
+        r.months.forEach((md,i)=>{ cm[i].orders += md.ordersValue; cm[i].sales += md.salesValue; });
+      } else {
+        ct += convertForSubtotal(r.targetQty, uom, convFactorFor(r));
+        cs += convertForSubtotal(r.totalSalesQty, uom, convFactorFor(r));
+        r.months.forEach((md,i)=>{
+          cm[i].orders += convertForSubtotal(md.ordersQty, uom, convFactorFor(r));
+          cm[i].sales += convertForSubtotal(md.salesQty, uom, convFactorFor(r));
+        });
+      }
     });
+    const deficit = cs - ct;
+    const varPct = ct !== 0 ? deficit/ct : null;
+    const displayUom = isVal ? 'Rs' : uom;
     return `<tr style="background:#E7EEF9;font-weight:700;border-top:1.5px solid #B9CBE8;border-bottom:1.5px solid #B9CBE8;">
-      <td data-label="Category" style="color:var(--navy);">Total ${esc(cat)}</td>
+      <td>Total ${esc(cat)}</td>
+      <td>${esc(displayUom)}</td>
       <td class="num">${fmt(ct)}</td>
-      ${cm.map(m=>`<td class="num">${fmt(m.orders)}</td><td class="num">${fmt(m.sales)}</td><td class="num">${fmt(m.sec)}</td>`).join('')}
-      <td class="num" style="${cb>0?'color:var(--red);':''}">${fmt(cb)}</td>
-      <td class="num" style="${cd<0?'color:var(--red);':''}">${fmt(cd)}</td>
+      ${cm.map(m=>`<td class="num">${fmt(m.orders)}</td><td class="num">${fmt(m.sales)}</td>`).join('')}
+      <td class="num">${fmt(cs)}</td>
+      <td class="num" style="${varPct!=null && varPct<0?'color:var(--red);':''}">${varPct!=null ? (varPct*100).toFixed(1)+'%' : '—'}</td>
     </tr>`;
   }
 
@@ -2189,31 +1993,25 @@ async function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, d
   </div>
   ${renderTvaQuarterSelector()}
   <div class="cards-row">
-    <div class="stat-card"><div class="stat-label">${esc(targetLabel)}</div><div class="stat-value">${fmt(totTarget)}</div></div>
-    <div class="stat-card" style="border-color:${totBalance>0?'#EFC9C3':'var(--line)'};"><div class="stat-label">Balance to Achieve — Primary</div><div class="stat-value ${totBalance>0?'neg':'pos'}">${fmt(totBalance)}</div></div>
-    <div class="stat-card" style="border-color:${totDefS<0?'#EFC9C3':'var(--line)'};"><div class="stat-label">Deficit — Secondary</div><div class="stat-value ${totDefS<0?'neg':'pos'}">${fmt(totDefS)}</div></div>
+    <div class="stat-card"><div class="stat-label">Sales Quota (${tvaQuarterLabel(state.tvaQuarter)})</div><div class="stat-value">${fmt(totTarget)}</div></div>
+    <div class="stat-card"><div class="stat-label">Achievement (Net Sales)</div><div class="stat-value">${fmt(totSales)}</div></div>
+    <div class="stat-card" style="border-color:${totDeficit<0?'#EFC9C3':'var(--line)'};"><div class="stat-label">Deficit</div><div class="stat-value ${totDeficit<0?'neg':'pos'}">${fmt(totDeficit)}</div></div>
   </div>
   <div class="panel">
-    <h3>Category &amp; HO Family-wise <span class="cnt">${categoryOrder.length} categories · ${sorted.length} families${activeMonths.length<allMonths.length?' · showing '+activeMonths.map(tvaMonthShort).join(' & ')+' only, until next month\u2019s target is uploaded':''} · blue rows are category totals, red figures still owe against target</span></h3>
+    <h3>Product-wise <span class="cnt">${categoryOrder.length} categories · ${sorted.length} products · category totals shown at the bottom of each group, in that category's own unit</span></h3>
     <div style="overflow-x:auto;">
     <table class="responsive-table">
       <thead>
         <tr>
-          <th rowspan="2" style="vertical-align:bottom;">HO Family Name</th>
-          <th rowspan="2" style="vertical-align:bottom;" class="num">${esc(targetLabel)}</th>
-          ${activeMonths.map(m=>`<th colspan="3" style="text-align:center;">${tvaMonthShort(m)}</th>`).join('')}
-          <th rowspan="2" style="vertical-align:bottom;" class="num">Balance to<br>Achieve</th>
-          <th rowspan="2" style="vertical-align:bottom;" class="num">Deficit<br>Secondary</th>
-        </tr>
-        <tr>
-          ${activeMonths.map(()=>'<th class="num">Primary Orders</th><th class="num">Primary Net Sales</th><th class="num">Sec. Net Sales</th>').join('')}
+          <th>Product</th><th>UOM</th><th class="num">Sales Quota</th>
+          ${activeMonths.map(m=>`<th class="num">${tvaMonthShort(m)} Orders</th><th class="num">${tvaMonthShort(m)} Sales</th>`).join('')}
+          <th class="num">Total Net Sales</th><th class="num">Var %</th>
         </tr>
       </thead>
       <tbody>
       ${categoryOrder.map(cat=>{
-        const familyRows = byCategory[cat];
-        // Skip the subtotal row when a category has only one family — nothing to subtotal
-        return familyRows.map(familyRow).join('') + (familyRows.length>1 ? categorySubtotalRow(cat, familyRows) : '');
+        const famRows = byCategory[cat];
+        return famRows.map(familyRow).join('') + (famRows.length ? categorySubtotalRow(cat, famRows) : '');
       }).join('')}
       </tbody>
     </table>
@@ -2225,78 +2023,60 @@ async function renderTvaScreen({title, rows, activeMonths, onBack, townsBelow, d
     <div class="town-grid">
       ${townsBelow.map(t=>`<button class="town-card" onclick="tvaSelectTown('${escJs(t)}')">
         <span class="tc-name">${esc(t)}</span>
-        <span class="tc-nums"><span>Tap to view HO family detail</span></span>
+        <span class="tc-nums"><span>Tap to view product detail</span></span>
       </button>`).join('')}
     </div>
   </div>` : ''}`;
 }
+async function renderTvaScreen({title, rows, onBack, townsBelow, downloadName}){
+  return renderTvaScreen_body(rows, title, onBack, townsBelow, downloadName);
+}
 
-async function tvaDownloadCsv(name){
+function tvaDownloadCsv(name){
   const rows = state.tvaRows;
-  const activeMonths = state.tvaActiveMonths || QUARTER_MONTHS[state.tvaQuarter];
   if(!rows) return;
-  const [categories, familySeq, categorySeq] = await Promise.all([fetchHoFamilyCategories(), fetchHoFamilySequences(), fetchCategorySequences()]);
-  const targetLabel = tvaTargetLabel(activeMonths, QUARTER_MONTHS[state.tvaQuarter]);
-  let header = `Category,HO Family,${targetLabel} Qty,${targetLabel} Value`;
-  activeMonths.forEach(m=>{ header += `,${m} Primary Orders Qty,${m} Primary Orders Value,${m} Primary Net Sales Qty,${m} Primary Net Sales Value,${m} Sec Net Sales Qty,${m} Sec Net Sales Value`; });
-  header += ',Balance to Achieve Qty,Balance to Achieve Value,Deficit Secondary Qty,Deficit Secondary Value\n';
+  const sorted = [...rows].sort((a,b)=> a.family.localeCompare(b.family));
+  const activeMonths = rows.length ? rows[0].months.map(m=>m.month) : [];
+  let header = 'Category,Product,UOM,Sales Quota Qty,Sales Quota Value';
+  activeMonths.forEach(m=>{ header += `,${m} Orders Qty,${m} Orders Value,${m} Sales Qty,${m} Sales Value`; });
+  header += ',Total Net Sales Qty,Total Net Sales Value,Var %\n';
   let csv = header;
-
   const byCategory = {};
-  rows.forEach(r=>{
-    const cat = categories[r.family] || r.family;
-    (byCategory[cat] = byCategory[cat]||[]).push(r);
-  });
-  Object.values(byCategory).forEach(list=>{
-    list.sort((a,b)=>{
-      const sa = familySeq[a.family], sb = familySeq[b.family];
-      if(sa!=null && sb!=null && sa!==sb) return sa-sb;
-      if(sa!=null && sb==null) return -1;
-      if(sa==null && sb!=null) return 1;
-      return a.family.localeCompare(b.family);
-    });
-  });
-  const categoryOrder = Object.keys(byCategory).sort((a,b)=>{
-    const sa = categorySeq[a], sb = categorySeq[b];
-    if(sa!=null && sb!=null && sa!==sb) return sa-sb;
-    if(sa!=null && sb==null) return -1;
-    if(sa==null && sb!=null) return 1;
-    return a.localeCompare(b);
-  });
+  sorted.forEach(r=> (byCategory[r.category] = byCategory[r.category]||[]).push(r));
+  const categoryOrder = Object.keys(byCategory).sort((a,b)=>a.localeCompare(b));
 
   function familyLine(cat, r){
-    let line = `"${cat}","${r.family}",${r.quarterTargetQty.toFixed(2)},${r.quarterTargetValue.toFixed(2)}`;
-    activeMonths.forEach(m=>{
-      const md = r.months.find(x=>x.month===m) || {ordersQty:0,ordersValue:0,salesQty:0,salesValue:0,secQty:0,secValue:0};
-      line += `,${md.ordersQty.toFixed(2)},${md.ordersValue.toFixed(2)},${md.salesQty.toFixed(2)},${md.salesValue.toFixed(2)},${md.secQty.toFixed(2)},${md.secValue.toFixed(2)}`;
-    });
-    const bal = computeBalanceToAchieve(r, activeMonths);
-    return line + `,${bal.qty.toFixed(2)},${bal.value.toFixed(2)},${r.deficitSecondaryQty.toFixed(2)},${r.deficitSecondaryValue.toFixed(2)}\n`;
+    let line = `"${cat}","${r.family}",pcs,${r.targetQty.toFixed(2)},${r.targetValue.toFixed(2)}`;
+    r.months.forEach(md=>{ line += `,${md.ordersQty.toFixed(2)},${md.ordersValue.toFixed(2)},${md.salesQty.toFixed(2)},${md.salesValue.toFixed(2)}`; });
+    const varPctStr = r.varPct!=null ? (r.varPct*100).toFixed(2)+'%' : '';
+    return line + `,${r.totalSalesQty.toFixed(2)},${r.totalSalesValue.toFixed(2)},${varPctStr}\n`;
   }
-  function categorySubtotalLine(cat, familyRows){
-    let ct=0, cbq=0, cbv=0, cdq=0, cdv=0;
-    const cm = activeMonths.map(()=>({oq:0,ov:0,sq:0,sv:0,seq:0,sev:0}));
-    let ctv=0;
-    familyRows.forEach(r=>{
-      ct += r.quarterTargetQty; ctv += r.quarterTargetValue;
-      const bal = computeBalanceToAchieve(r, activeMonths);
-      cbq += bal.qty; cbv += bal.value;
-      cdq += r.deficitSecondaryQty; cdv += r.deficitSecondaryValue;
-      activeMonths.forEach((m,i)=>{
-        const md = r.months.find(x=>x.month===m);
-        if(!md) return;
-        cm[i].oq+=md.ordersQty; cm[i].ov+=md.ordersValue; cm[i].sq+=md.salesQty; cm[i].sv+=md.salesValue; cm[i].seq+=md.secQty; cm[i].sev+=md.secValue;
+  function subtotalLine(cat, famRows){
+    const uom = famRows[0].subtotalUom;
+    let ct=0, cs=0, ctv=0, csv_=0;
+    const cm = activeMonths.map(()=>({oq:0,ov:0,sq:0,sv:0}));
+    famRows.forEach(r=>{
+      ct += convertForSubtotal(r.targetQty, uom, r.conversionFactor);
+      cs += convertForSubtotal(r.totalSalesQty, uom, r.conversionFactor);
+      ctv += r.targetValue; csv_ += r.totalSalesValue;
+      r.months.forEach((md,i)=>{
+        cm[i].oq += convertForSubtotal(md.ordersQty, uom, r.conversionFactor);
+        cm[i].ov += md.ordersValue;
+        cm[i].sq += convertForSubtotal(md.salesQty, uom, r.conversionFactor);
+        cm[i].sv += md.salesValue;
       });
     });
-    let line = `"${cat}","Total ${cat}",${ct.toFixed(2)},${ctv.toFixed(2)}`;
-    cm.forEach(m=>{ line += `,${m.oq.toFixed(2)},${m.ov.toFixed(2)},${m.sq.toFixed(2)},${m.sv.toFixed(2)},${m.seq.toFixed(2)},${m.sev.toFixed(2)}`; });
-    return line + `,${cbq.toFixed(2)},${cbv.toFixed(2)},${cdq.toFixed(2)},${cdv.toFixed(2)}\n`;
+    const varPct = ct!==0 ? (cs-ct)/ct : null;
+    let line = `"${cat}","Total ${cat}","${uom}",${ct.toFixed(2)},${ctv.toFixed(2)}`;
+    cm.forEach(m=>{ line += `,${m.oq.toFixed(2)},${m.ov.toFixed(2)},${m.sq.toFixed(2)},${m.sv.toFixed(2)}`; });
+    const varPctStr = varPct!=null ? (varPct*100).toFixed(2)+'%' : '';
+    return line + `,${cs.toFixed(2)},${csv_.toFixed(2)},${varPctStr}\n`;
   }
 
   categoryOrder.forEach(cat=>{
-    const familyRows = byCategory[cat];
-    familyRows.forEach(r=> csv += familyLine(cat, r));
-    if(familyRows.length>1) csv += categorySubtotalLine(cat, familyRows);
+    const famRows = byCategory[cat];
+    famRows.forEach(r=> csv += familyLine(cat, r));
+    csv += subtotalLine(cat, famRows);
   });
 
   const blob = new Blob([csv], {type:'text/csv'});
@@ -2307,43 +2087,29 @@ async function tvaDownloadCsv(name){
   URL.revokeObjectURL(url);
 }
 
-/* ---- NSM view: RSM grid -> combined (that RSM's all towns) -> individual town ---- */
+/* ---- NSM view: national -> RSM grid -> combined (RSM's towns) -> individual town ---- */
 async function loadNsmAchievementView(){
   const body = document.getElementById('nsmBody');
   if(!state.tvaQuarter) state.tvaQuarter = TVA_QUARTER_OPTIONS[0];
   try{
     if(state.tvaSelectedTown){
-      if(!state.tvaRows){
-        body.innerHTML = '<div class="loading">Loading…</div>';
-        state.tvaRows = await computeQuarterlyRollup(state.tvaQuarter, state.tvaSelectedTown);
-        state.tvaActiveMonths = await getGlobalActiveMonths(state.tvaQuarter);
-      }
-      body.innerHTML = await renderTvaScreen({
-        title: state.tvaSelectedTown, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
-        onBack: 'tvaBackToRsmCombined()', townsBelow: null, downloadName: state.tvaSelectedTown
-      });
+      if(!state.tvaRows) state.tvaRows = await computeRollup(state.tvaQuarter, state.tvaSelectedTown);
+      body.innerHTML = await renderTvaScreen({title: state.tvaSelectedTown, rows: state.tvaRows, onBack:'tvaBackToRsmCombined()', townsBelow:null, downloadName: state.tvaSelectedTown});
     } else if(state.tvaExpandedRsm){
       const towns = TOWN_DATA[state.tvaExpandedRsm].towns;
       if(!state.tvaRows){
         body.innerHTML = '<div class="loading">Loading territory summary…</div>';
-        state.tvaRows = await computeQuarterlyRollupCombined(state.tvaQuarter, towns);
-        state.tvaActiveMonths = await getGlobalActiveMonths(state.tvaQuarter);
+        state.tvaRows = await computeRollupCombined(state.tvaQuarter, towns);
       }
-      body.innerHTML = await renderTvaScreen({
-        title: `${TOWN_DATA[state.tvaExpandedRsm].name} — All Towns`, rows: state.tvaRows, activeMonths: state.tvaActiveMonths,
-        onBack: 'tvaBackToRsmList()', townsBelow: towns, downloadName: TOWN_DATA[state.tvaExpandedRsm].name
-      });
+      body.innerHTML = await renderTvaScreen({title: `${TOWN_DATA[state.tvaExpandedRsm].name} — All Towns`, rows: state.tvaRows, onBack:'tvaBackToRsmList()', townsBelow: towns, downloadName: TOWN_DATA[state.tvaExpandedRsm].name});
     } else {
       if(!state.tvaNationalRows){
         body.innerHTML = '<div class="loading">Loading national summary…</div>';
         const allTowns = ALL_TOWNS_FLAT();
-        state.tvaNationalRows = await computeQuarterlyRollupCombined(state.tvaQuarter, allTowns);
-        state.tvaNationalActiveMonths = await getGlobalActiveMonths(state.tvaQuarter);
+        state.tvaNationalRows = await computeRollupCombined(state.tvaQuarter, allTowns);
       }
-      const nationalScreen = await renderTvaScreen({
-        title: 'All Regions', rows: state.tvaNationalRows, activeMonths: state.tvaNationalActiveMonths,
-        onBack: null, townsBelow: null, downloadName: 'All_Regions'
-      });
+      const nationalScreen = await renderTvaScreen({title:'All Regions', rows: state.tvaNationalRows, onBack:null, townsBelow:null, downloadName:'All_Regions'});
+      state.tvaRows = state.tvaNationalRows; // so CSV export button on national screen works too
       const rsmGrid = `<div class="panel">
         <h3>By RSM <span class="cnt">tap to view territory-wide, then drill into towns</span></h3>
         <div class="town-grid">
@@ -2356,312 +2122,291 @@ async function loadNsmAchievementView(){
       body.innerHTML = nationalScreen + rsmGrid;
     }
   }catch(e){
-    body.innerHTML = `<div class="err">Could not load Target vs Achievement: ${esc(e.message||String(e))}. <button class="link-btn" onclick="state.tvaRows=null;render();">Retry</button></div>`;
+    body.innerHTML = `<div class="err">Could not load Target vs Achievement: ${esc(e.message||String(e))}. <button class="link-btn" onclick="state.tvaRows=null;state.tvaNationalRows=null;render();">Retry</button></div>`;
   }
 }
-function tvaDrillRsm(id){ state.tvaExpandedRsm=id; state.tvaRows=null; state.tvaActiveMonths=null; render(); }
-function tvaBackToRsmList(){ state.tvaExpandedRsm=null; state.tvaSelectedTown=null; state.tvaRows=null; state.tvaActiveMonths=null; render(); }
-function tvaBackToRsmCombined(){ state.tvaSelectedTown=null; state.tvaRows=null; state.tvaActiveMonths=null; render(); }
-
-
-
+function tvaDrillRsm(id){ state.tvaExpandedRsm=id; state.tvaRows=null; render(); }
+function tvaBackToRsmList(){ state.tvaExpandedRsm=null; state.tvaSelectedTown=null; state.tvaRows=null; render(); }
+function tvaBackToRsmCombined(){ state.tvaSelectedTown=null; state.tvaRows=null; render(); }
+function ALL_TOWNS_FLAT(){ return RSM_IDS.flatMap(id=>TOWN_DATA[id].towns); }
 /* ============================= ADMIN: T v A UPLOAD ============================= */
 function setTvaUploadSubTab(t){ state.tvaUploadSubTab=t; state.tvaUploadResult=null; render(); }
 async function loadTvaUploadView(){
   const body = document.getElementById('nsmBody');
-  if(!state.tvaPriceList) state.tvaPriceList = await fetchHoFamilyPriceList();
-  if(!state.tvaCategoryList) state.tvaCategoryList = await fetchHoFamilyCategoryList();
-  if(!state.tvaCategorySeqList) state.tvaCategorySeqList = await fetchCategorySequenceList();
+  if(!state.tvaHierarchyList) state.tvaHierarchyList = await fetchHierarchyList();
+  if(!state.tvaFamilyMetaList) state.tvaFamilyMetaList = await fetchFamilyMetaList();
   body.innerHTML = renderTvaUploadPanel();
 }
-async function fetchHoFamilyCategoryList(){
+async function fetchHierarchyList(){
   if(!sb) return [];
-  const {data, error} = await sb.from('ho_family_category').select('*').order('sequence').order('ho_family');
+  const {data, error} = await sb.from('product_hierarchy_v4').select('*').order('family').order('sku_code');
   if(error){ console.error(error); return []; }
   return data||[];
 }
-async function fetchCategorySequenceList(){
+async function fetchFamilyMetaList(){
   if(!sb) return [];
-  const {data, error} = await sb.from('category_sequence').select('*').order('sequence').order('category');
-  if(error){ console.error(error); return []; }
-  return data||[];
-}
-async function fetchHoFamilyPriceList(){
-  if(!sb) return [];
-  const {data, error} = await sb.from('ho_family_price').select('*').order('ho_family');
+  const {data, error} = await sb.from('family_category').select('*').order('category').order('family');
   if(error){ console.error(error); return []; }
   return data||[];
 }
 function renderTvaUploadPanel(){
-  const sub = state.tvaUploadSubTab || 'price';
+  const sub = state.tvaUploadSubTab || 'hierarchy';
   return `
   <div class="tabs" style="margin-bottom:18px;">
-    <button class="tab ${sub==='price'?'active':''}" onclick="setTvaUploadSubTab('price')">Price Config</button>
-    <button class="tab ${sub==='category'?'active':''}" onclick="setTvaUploadSubTab('category')">Category Config</button>
+    <button class="tab ${sub==='hierarchy'?'active':''}" onclick="setTvaUploadSubTab('hierarchy')">Hierarchy Update</button>
+    <button class="tab ${sub==='pricecat'?'active':''}" onclick="setTvaUploadSubTab('pricecat')">Price &amp; Category Update</button>
     <button class="tab ${sub==='target'?'active':''}" onclick="setTvaUploadSubTab('target')">Target Upload</button>
-    <button class="tab ${sub==='primary'?'active':''}" onclick="setTvaUploadSubTab('primary')">Primary Achievement</button>
-    <button class="tab ${sub==='secondary'?'active':''}" onclick="setTvaUploadSubTab('secondary')">Secondary Achievement</button>
+    <button class="tab ${sub==='achievement'?'active':''}" onclick="setTvaUploadSubTab('achievement')">Primary Achievement Upload</button>
   </div>
-  ${sub==='price' ? renderTvaPricePanel() : sub==='category' ? renderTvaCategoryPanel() : sub==='target' ? renderTvaTargetPanel() : sub==='primary' ? renderTvaAchievementFilePanel('primary') : renderTvaAchievementFilePanel('secondary')}`;
+  ${sub==='hierarchy' ? renderTvaHierarchyPanel() : sub==='pricecat' ? renderTvaPriceCategoryPanel() : sub==='target' ? renderTvaTargetUploadPanel() : renderTvaAchievementUploadPanel()}`;
 }
 
-function renderTvaPricePanel(){
-  const list = state.tvaPriceList || [];
+/* ---- Hierarchy Update: correct which family a SKU belongs to ---- */
+function renderTvaHierarchyPanel(){
+  const list = state.tvaHierarchyList || [];
+  const filter = (state.tvaHierarchyFilter||'').toLowerCase();
+  const filtered = filter ? list.filter(r=> r.sku_code.includes(filter) || r.sku_name.toLowerCase().includes(filter) || r.family.toLowerCase().includes(filter)) : list;
+  const families = [...new Set(list.map(r=>r.family))].sort();
   return `
   <div class="panel">
-    <h3>HO Family Price Configuration <span class="cnt">${list.length} families · applies to all past &amp; future months instantly</span></h3>
-    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Changing a price here immediately changes every Target/Primary/Secondary Value figure for this family, in every month — value is always calculated live from qty × current price, never stored.</p>
+    <h3>SKU → Family Mapping <span class="cnt">${list.length} SKUs · corrections apply instantly everywhere</span></h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">This is the base hierarchy — every SKU's family assignment. Fix a wrong assignment here and every view, dashboard, and export recalculates immediately, no re-upload needed.</p>
+    <input id="hierarchyFilterInput" placeholder="Search SKU code, description, or family…" value="${esc(state.tvaHierarchyFilter||'')}" oninput="tvaFilterHierarchy(this.value)" style="width:100%;max-width:420px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;margin-bottom:12px;">
     <table class="responsive-table">
-      <thead><tr><th>HO Family</th><th class="num">Price (per unit)</th><th></th></tr></thead>
+      <thead><tr><th>SKU Code</th><th>Description</th><th>Family</th><th></th></tr></thead>
       <tbody>
-      ${list.map((r,i)=>`<tr>
-        <td data-label="HO Family">${esc(r.ho_family)}</td>
-        <td class="num" data-label="Price"><input id="priceInput${i}" type="number" step="0.01" value="${r.price}" style="width:110px;text-align:right;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
-        <td><button class="btn btn-primary btn-sm" onclick="handleSavePrice('${escJs(r.ho_family)}', document.getElementById('priceInput${i}').value)">Save</button></td>
+      ${filtered.slice(0,200).map((r,i)=>`<tr>
+        <td data-label="SKU Code">${esc(r.sku_code)}</td>
+        <td data-label="Description">${esc(r.sku_name)}</td>
+        <td data-label="Family"><input id="hierFamInput${i}" list="tvaFamilyOptions" value="${esc(r.family)}" style="width:100%;max-width:260px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
+        <td><button class="btn btn-primary btn-sm" onclick="handleSaveHierarchy('${escJs(r.sku_code)}', document.getElementById('hierFamInput${i}').value)">Save</button></td>
       </tr>`).join('')}
       </tbody>
     </table>
+    ${filtered.length>200 ? `<p class="footer-note" style="text-align:left;">Showing first 200 of ${filtered.length} matches — refine your search to see more.</p>` : ''}
+    <datalist id="tvaFamilyOptions">${families.map(f=>`<option value="${esc(f)}">`).join('')}</datalist>
   </div>
   <div class="panel">
     <h3>Bulk Update</h3>
-    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Paste one family per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">HO Family, Price</code> to update many at once.</p>
-    <textarea id="bulkPriceInput" rows="6" placeholder="B Pen BP-1 / Clipper Plus, 12.32
-Ball Pen BP-2, 14.50" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
-    <button class="btn btn-primary" style="margin-top:10px;" onclick="handleBulkPriceUpload()">Update Prices</button>
-    <div id="priceUploadStatus"></div>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Paste one SKU per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">SKU Code, Family</code>.</p>
+    <textarea id="bulkHierarchyInput" rows="6" placeholder="036062556, Ball Pen BP-1" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
+    <button class="btn btn-primary" style="margin-top:10px;" onclick="handleBulkHierarchyUpload()">Update Mapping</button>
+    <div id="hierarchyUploadStatus"></div>
   </div>`;
 }
-async function handleSavePrice(family, priceStr){
-  const price = Number(priceStr);
-  if(isNaN(price) || price<0){ alert('Enter a valid price.'); return; }
-  const {error} = await sb.from('ho_family_price').upsert({ho_family:family, price, updated_by:state.user.username}, {onConflict:'ho_family'});
+function tvaFilterHierarchy(v){ state.tvaHierarchyFilter=v; render(); }
+async function handleSaveHierarchy(skuCode, family){
+  family = family.trim();
+  if(!family){ alert('Enter a family.'); return; }
+  const {error} = await sb.from('product_hierarchy_v4').upsert({sku_code:skuCode, family}, {onConflict:'sku_code'});
   if(error){ alert('Could not save: '+error.message); return; }
-  tvaCache.prices = null;
-  state.tvaPriceList = await fetchHoFamilyPriceList();
+  tvaCache.hierarchy = null;
+  state.tvaHierarchyList = await fetchHierarchyList();
   render();
 }
-async function handleBulkPriceUpload(){
-  const text = document.getElementById('bulkPriceInput').value;
-  if(!text.trim()){ alert('Paste at least one line.'); return; }
-  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
-  const rows = [], unmatched = [];
-  lines.forEach(line=>{
-    const parts = line.split(/[,\t]/).map(p=>p.trim());
-    if(parts.length<2){ unmatched.push(line); return; }
-    const price = Number(parts[1]);
-    if(isNaN(price)){ unmatched.push(line); return; }
-    rows.push({ho_family:parts[0], price, updated_by:state.user.username});
-  });
-  if(rows.length){
-    const {error} = await sb.from('ho_family_price').upsert(rows, {onConflict:'ho_family'});
-    if(error){ document.getElementById('priceUploadStatus').innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
-  }
-  tvaCache.prices = null;
-  state.tvaPriceList = await fetchHoFamilyPriceList();
-  document.getElementById('priceUploadStatus').innerHTML = `<div style="margin-top:10px;padding:10px;border-radius:8px;background:var(--green-bg);">${rows.length} updated.${unmatched.length?` ${unmatched.length} line(s) skipped (couldn't parse).`:''}</div>`;
-  render();
-}
-
-function renderTvaCategoryPanel(){
-  const list = state.tvaCategoryList || [];
-  const catSeqList = state.tvaCategorySeqList || [];
-  const categories = [...new Set(list.map(r=>r.category))].sort();
-  return `
-  <div class="panel">
-    <h3>Category Order <span class="cnt">${catSeqList.length} categories · controls which "Total X" group appears first</span></h3>
-    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Lower number = appears first. Ties break alphabetically. Leave gaps (10, 20, 30…) so you can slot a new category in between later without renumbering everything.</p>
-    <table class="responsive-table">
-      <thead><tr><th>Category</th><th class="num">Sequence</th><th></th></tr></thead>
-      <tbody>
-      ${catSeqList.map((r,i)=>`<tr>
-        <td data-label="Category">${esc(r.category)}</td>
-        <td class="num" data-label="Sequence"><input id="catSeqInput${i}" type="number" value="${r.sequence}" style="width:90px;text-align:right;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
-        <td><button class="btn btn-primary btn-sm" onclick="handleSaveCategorySequence('${escJs(r.category)}', document.getElementById('catSeqInput${i}').value)">Save</button></td>
-      </tr>`).join('')}
-      </tbody>
-    </table>
-    <p style="font-size:12.5px;color:var(--muted);margin:10px 0 0;">Bulk: paste <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">Category, Sequence</code> one per line.</p>
-    <textarea id="bulkCatSeqInput" rows="4" placeholder="Pointer, 5
-Ball Pens, 10" style="width:100%;margin-top:6px;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
-    <button class="btn btn-primary" style="margin-top:10px;" onclick="handleBulkCategorySequenceUpload()">Update Order</button>
-    <div id="catSeqUploadStatus"></div>
-  </div>
-  <div class="panel">
-    <h3>HO Family → Category &amp; Order <span class="cnt">${list.length} families · order applies within each family's category</span></h3>
-    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Reassigning a family's category, or its order within that category, applies instantly everywhere — every view and every CSV export, for every month. No re-upload needed.</p>
-    <table class="responsive-table">
-      <thead><tr><th>HO Family</th><th>Category</th><th class="num">Sequence</th><th></th></tr></thead>
-      <tbody>
-      ${list.map((r,i)=>`<tr>
-        <td data-label="HO Family">${esc(r.ho_family)}</td>
-        <td data-label="Category"><input id="categoryInput${i}" list="tvaCategoryOptions" value="${esc(r.category)}" style="width:100%;max-width:200px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
-        <td class="num" data-label="Sequence"><input id="familySeqInput${i}" type="number" value="${r.sequence}" style="width:80px;text-align:right;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
-        <td><button class="btn btn-primary btn-sm" onclick="handleSaveCategory('${escJs(r.ho_family)}', document.getElementById('categoryInput${i}').value, document.getElementById('familySeqInput${i}').value)">Save</button></td>
-      </tr>`).join('')}
-      </tbody>
-    </table>
-    <datalist id="tvaCategoryOptions">${categories.map(c=>`<option value="${esc(c)}">`).join('')}</datalist>
-  </div>
-  <div class="panel">
-    <h3>Bulk Update — Family Category &amp; Order</h3>
-    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Paste one family per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">HO Family, Category, Sequence</code> (sequence optional — leave it off to keep the current value).</p>
-    <textarea id="bulkCategoryInput" rows="6" placeholder="Pointer Wow, Pointer, 10
-Pointer Metallic, Pointer, 20" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
-    <button class="btn btn-primary" style="margin-top:10px;" onclick="handleBulkCategoryUpload()">Update Categories</button>
-    <div id="categoryUploadStatus"></div>
-  </div>`;
-}
-async function handleSaveCategory(family, category, sequence){
-  category = category.trim();
-  if(!category){ alert('Enter a category.'); return; }
-  const payload = {ho_family:family, category};
-  if(sequence!==undefined && sequence!=='') payload.sequence = Number(sequence);
-  const {error} = await sb.from('ho_family_category').upsert(payload, {onConflict:'ho_family'});
-  if(error){ alert('Could not save: '+error.message); return; }
-  tvaCache.categories = null; tvaCache.familySequence = null;
-  state.tvaCategoryList = await fetchHoFamilyCategoryList();
-  render();
-}
-async function handleSaveCategorySequence(category, sequence){
-  const seq = Number(sequence);
-  if(isNaN(seq)){ alert('Enter a valid number.'); return; }
-  const {error} = await sb.from('category_sequence').upsert({category, sequence:seq}, {onConflict:'category'});
-  if(error){ alert('Could not save: '+error.message); return; }
-  tvaCache.categorySequence = null;
-  state.tvaCategorySeqList = await fetchCategorySequenceList();
-  render();
-}
-async function handleBulkCategorySequenceUpload(){
-  const text = document.getElementById('bulkCatSeqInput').value;
-  if(!text.trim()){ alert('Paste at least one line.'); return; }
-  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
-  const rows = [], unmatched = [];
-  lines.forEach(line=>{
-    const parts = line.split(/[,\t]/).map(p=>p.trim());
-    const seq = Number(parts[1]);
-    if(parts.length<2 || isNaN(seq)){ unmatched.push(line); return; }
-    rows.push({category:parts[0], sequence:seq});
-  });
-  if(rows.length){
-    const {error} = await sb.from('category_sequence').upsert(rows, {onConflict:'category'});
-    if(error){ document.getElementById('catSeqUploadStatus').innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
-  }
-  tvaCache.categorySequence = null;
-  state.tvaCategorySeqList = await fetchCategorySequenceList();
-  document.getElementById('catSeqUploadStatus').innerHTML = `<div style="margin-top:10px;padding:10px;border-radius:8px;background:var(--green-bg);">${rows.length} updated.${unmatched.length?` ${unmatched.length} line(s) skipped.`:''}</div>`;
-  render();
-}
-async function handleBulkCategoryUpload(){
-  const text = document.getElementById('bulkCategoryInput').value;
+async function handleBulkHierarchyUpload(){
+  const text = document.getElementById('bulkHierarchyInput').value;
   if(!text.trim()){ alert('Paste at least one line.'); return; }
   const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
   const rows = [], unmatched = [];
   lines.forEach(line=>{
     const parts = line.split(/[,\t]/).map(p=>p.trim());
     if(parts.length<2 || !parts[1]){ unmatched.push(line); return; }
-    const row = {ho_family:parts[0], category:parts[1]};
-    if(parts.length>=3 && parts[2]!==''){
-      const seq = Number(parts[2]);
-      if(isNaN(seq)){ unmatched.push(line); return; }
-      row.sequence = seq;
-    }
-    rows.push(row);
+    rows.push({sku_code:parts[0], family:parts[1]});
   });
   if(rows.length){
-    const {error} = await sb.from('ho_family_category').upsert(rows, {onConflict:'ho_family'});
-    if(error){ document.getElementById('categoryUploadStatus').innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
+    const {error} = await sb.from('product_hierarchy_v4').upsert(rows, {onConflict:'sku_code'});
+    if(error){ document.getElementById('hierarchyUploadStatus').innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
   }
-  tvaCache.categories = null; tvaCache.familySequence = null;
-  state.tvaCategoryList = await fetchHoFamilyCategoryList();
-  document.getElementById('categoryUploadStatus').innerHTML = `<div style="margin-top:10px;padding:10px;border-radius:8px;background:var(--green-bg);">${rows.length} updated.${unmatched.length?` ${unmatched.length} line(s) skipped (couldn't parse).`:''}</div>`;
+  tvaCache.hierarchy = null;
+  state.tvaHierarchyList = await fetchHierarchyList();
+  document.getElementById('hierarchyUploadStatus').innerHTML = `<div style="margin-top:10px;padding:10px;border-radius:8px;background:var(--green-bg);">${rows.length} updated.${unmatched.length?` ${unmatched.length} line(s) skipped.`:''}</div>`;
   render();
 }
 
-function renderTvaTargetPanel(){
+/* ---- Price & Category Update: correct a family's category, subtotal unit, price, conversion factor ---- */
+function renderTvaPriceCategoryPanel(){
+  const list = state.tvaFamilyMetaList || [];
+  const categories = [...new Set(list.map(r=>r.category))].sort();
+  return `
+  <div class="panel">
+    <h3>Family Price &amp; Category <span class="cnt">${list.length} families · applies to all past &amp; future data instantly</span></h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Category controls which "Total X" group a family rolls up into. Subtotal Unit is what that group displays in (pcs / gross / litres / kg). Conversion Factor is ml-per-unit or grams-per-unit — only needed for litres/kg families. Price is the flat trade price used for every Value figure.</p>
+    <table class="responsive-table">
+      <thead><tr><th>Family</th><th>Category</th><th>Subtotal Unit</th><th class="num">Conv. Factor</th><th class="num">Price</th><th></th></tr></thead>
+      <tbody>
+      ${list.map((r,i)=>`<tr style="${r.price_needs_review?'background:var(--amber-bg);':''}">
+        <td data-label="Family">${esc(r.family)}${r.price_needs_review?' <span style="color:var(--amber);font-size:11px;">⚠ needs price review</span>':''}</td>
+        <td data-label="Category"><input id="fcCat${i}" list="tvaCategoryOptionsFC" value="${esc(r.category)}" style="width:100%;max-width:180px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
+        <td data-label="Subtotal Unit">
+          <select id="fcUom${i}" style="padding:6px 8px;border:1px solid var(--line);border-radius:6px;">
+            ${['pcs','gross','litres','kg'].map(u=>`<option value="${u}" ${r.subtotal_uom===u?'selected':''}>${u}</option>`).join('')}
+          </select>
+        </td>
+        <td class="num" data-label="Conv. Factor"><input id="fcConv${i}" type="number" value="${r.conversion_factor ?? ''}" style="width:80px;text-align:right;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
+        <td class="num" data-label="Price"><input id="fcPrice${i}" type="number" step="0.01" value="${r.price}" style="width:100px;text-align:right;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
+        <td><button class="btn btn-primary btn-sm" onclick="handleSaveFamilyMeta('${escJs(r.family)}', document.getElementById('fcCat${i}').value, document.getElementById('fcUom${i}').value, document.getElementById('fcConv${i}').value, document.getElementById('fcPrice${i}').value)">Save</button></td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+    <datalist id="tvaCategoryOptionsFC">${categories.map(c=>`<option value="${esc(c)}">`).join('')}</datalist>
+  </div>`;
+}
+async function handleSaveFamilyMeta(family, category, subtotalUom, convFactor, price){
+  category = category.trim();
+  const priceNum = Number(price);
+  if(!category || isNaN(priceNum)){ alert('Enter a valid category and price.'); return; }
+  const payload = {family, category, subtotal_uom: subtotalUom, price: priceNum, price_needs_review: false};
+  if(convFactor !== '') payload.conversion_factor = Number(convFactor);
+  const {error} = await sb.from('family_category').upsert(payload, {onConflict:'family'});
+  if(error){ alert('Could not save: '+error.message); return; }
+  tvaCache.familyMeta = null;
+  state.tvaFamilyMetaList = await fetchFamilyMetaList();
+  render();
+}
+
+/* ---- Target Upload: matches the Annual Target Allocation format (sheet per town) ---- */
+const TVA_SHEET_TOWN = {
+ KHI:'Karachi',HYD:'Hyderabad',MPK:'Mirpurkhas',NWS:'Nawabshah',SUK:'Sukkur',LRK:'Larkana',
+ QTA:'Quetta',RYK:'Rahimyar Khan',KNP:'Khanpur',SDQ:'Sadiqabad',TRB:'Turbat',
+ BHW:'Bahawalpur',APE:'Ahmed pur East',MUL:'Multan',DGK:'Dera Ghazi Khan',MZH:'Muzaffargarh',
+ BWN:'Bhawalnagar',CHS:'Chishtian',MNC:'Mian Chunnu',VHR:'Vihari',
+ FSD:'Faisalabad',OKR:'Okara',SHW:'Sahiwal',PPS:'Pak Patan Shrif',BRW:'Burewala',
+ LHR:'Lahore',KSR:'Kasur',SHK:'Sheikhupura',PTK:'Pattoki',GRW:'Gujranwala',KMK:'Kamoki',
+ RWP:'Rawal pindi',WHC:'Wah cantt.',DNA:'Dina',CHK:'Chakwal',LLM:'Lalamusa',GRT:'Gujrat',
+ BHM:'Bhimber',MNW:'Mianwali',LYH:'Layyah',DIK:'Dera Ismail Khan',BNU:'Bannu',SRG:'Sargodha',
+ MBD:'Mandi Bahauddin',PHL:'Phalia',JHS:'Jhang Saddar',PRM:'Pirmahal',SLK:'Sialkot',NRW:'Narowal',
+ HFZ:'Hafizabad',WZD:'Wazirabad',
+ PSW:'Peshawar',KHT:'Kohat',SDA:'Sadda',ATK:'Attock City',MRD:'Mardan',TKB:'Takht Bhai',
+ MNG:'Mingora',DIR:'Dir',ABT:'Abbottabad',MZD:'Muzaffarabad',SKR:'Skardu',GLT:'Gilgit',
+ TLT:'Kot Abdul Malik',
+};
+function renderTvaTargetUploadPanel(){
   const result = state.tvaUploadResult;
   return `
   <div class="panel">
-    <h3>Upload Family Target</h3>
+    <h3>Upload Annual Target Allocation</h3>
     <div class="row-flex" style="margin-bottom:14px;">
       <div class="field" style="max-width:200px;">
-        <label>Month</label>
-        <select id="tvaTargetMonth">${TVA_MONTH_OPTIONS.map(m=>`<option value="${m}">${tvaMonthLabel(m)}</option>`).join('')}</select>
-      </div>
-      <div class="field" style="max-width:220px;">
-        <label>Town</label>
-        <select id="tvaTargetTown">${ALL_TOWNS_FLAT().map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select>
+        <label>Quarter</label>
+        <select id="tvaTargetQuarter">${TVA_QUARTER_OPTIONS.map(q=>`<option value="${q}">${q}</option>`).join('')}</select>
       </div>
     </div>
-    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Paste one family per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">Target Family, Qty</code> — matches your territory target sheet's Item Description column.</p>
-    <textarea id="tvaTargetPaste" rows="8" placeholder="Ink F Pen 15ml, 477.82
-Ball Pen BP-1, 78368.30" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
-    <button class="btn btn-primary" style="margin-top:10px;" onclick="handleTvaTargetUpload()">Upload Target</button>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
+      Upload the Annual Target Allocation workbook exactly as exported — one sheet per town, Item Code + Item Description + monthly Pcs columns + a "Q{N} 20XX-YY" quarterly total column. The item code clubs into whichever family it belongs to in the hierarchy.
+    </p>
+    <label class="upload-box" for="tvaTargetFile">
+      <div style="font-size:28px;margin-bottom:8px;">⬆</div>
+      <div style="font-weight:600;">Click to choose the .xlsx file</div>
+      <input id="tvaTargetFile" type="file" accept=".xlsx,.xls" onchange="handleTvaTargetFileUpload(this.files[0])">
+    </label>
+    <div id="tvaTargetUploadStatus"></div>
     ${result && result.kind==='target' ? renderTvaUploadResultBox(result) : ''}
   </div>`;
-}
-function ALL_TOWNS_FLAT(){ return RSM_IDS.flatMap(id=>TOWN_DATA[id].towns); }
-async function handleTvaTargetUpload(){
-  const month = document.getElementById('tvaTargetMonth').value;
-  const town = document.getElementById('tvaTargetTown').value;
-  const text = document.getElementById('tvaTargetPaste').value;
-  if(!text.trim()){ alert('Paste at least one line.'); return; }
-  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
-  const rsmId = TOWN_TO_RSM[town.toLowerCase()] ? TOWN_TO_RSM[town.toLowerCase()].rsmId : null;
-  const rows = [], unmatched = [];
-  lines.forEach(line=>{
-    const parts = line.split(/[,\t]/).map(p=>p.trim());
-    if(parts.length<2){ unmatched.push(line); return; }
-    const qty = Number(parts[1]);
-    if(isNaN(qty)){ unmatched.push(line); return; }
-    rows.push({month, town, target_family:parts[0], target_qty:qty, rsm_id:rsmId});
-  });
-  let res;
-  if(rows.length){
-    const {error} = await sb.from('monthly_target').upsert(rows, {onConflict:'month,town,target_family'});
-    res = error ? {ok:false,error:error.message} : {ok:true, count:rows.length, unmatched};
-  } else res = {ok:true, count:0, unmatched};
-  state.tvaUploadResult = {kind:'target', ...res};
-  render();
 }
 function renderTvaUploadResultBox(r){
   if(!r.ok) return `<div class="err" style="margin-top:12px;">${esc(r.error)}</div>`;
   return `<div style="margin-top:12px;padding:12px 14px;border-radius:8px;background:var(--green-bg);font-size:12.5px;">
-    <b>${r.count} row(s) updated.</b>${r.unmatched && r.unmatched.length ? `<div style="margin-top:6px;color:var(--amber);">${r.unmatched.length} line(s) skipped:<br>${r.unmatched.map(esc).join('<br>')}</div>` : ''}
+    <b>${r.count} row(s) updated${r.sheets?` across ${r.sheets} town sheet(s)`:''}.</b>
+    ${r.unmatched && r.unmatched.length ? `<div style="margin-top:6px;color:var(--amber);">${r.unmatched.length} item(s) skipped (not found in hierarchy or sheet not recognized):<br>${r.unmatched.slice(0,20).map(esc).join('<br>')}${r.unmatched.length>20?`<br>…and ${r.unmatched.length-20} more`:''}</div>` : ''}
   </div>`;
 }
+async function handleTvaTargetFileUpload(file){
+  if(!file) return;
+  const quarter = document.getElementById('tvaTargetQuarter').value;
+  const statusEl = document.getElementById('tvaTargetUploadStatus');
+  statusEl.innerHTML = '<div class="loading">Processing workbook…</div>';
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, {type:'array'});
+    const hierarchy = await fetchProductHierarchyV4();
+    const rows = [];
+    const unmatched = [];
+    let sheetsProcessed = 0;
+    for(const sheetName of wb.SheetNames){
+      const town = TVA_SHEET_TOWN[sheetName];
+      if(!town) continue;
+      const ws = wb.Sheets[sheetName];
+      const grid = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+      // find header row (contains 'Item Description') and the quarter-total column (label starts with 'Q' + matches this quarter's number)
+      let headerRowIdx = -1, itemCodeCol = -1, qtyCol = -1;
+      const qNum = quarter.split('-Q')[1];
+      for(let r=0; r<Math.min(grid.length,10); r++){
+        const row = grid[r]||[];
+        const idx = row.findIndex(c=>c==='Item Description');
+        if(idx>=0){ headerRowIdx = r; itemCodeCol = idx-1; break; }
+      }
+      if(headerRowIdx<0) continue;
+      // scan a wider header band for the "Q{n} " total column (may be a couple of rows down or same row)
+      for(let r=headerRowIdx; r<headerRowIdx+3 && r<grid.length; r++){
+        const row = grid[r]||[];
+        const idx = row.findIndex(c=> typeof c==='string' && c.replace(/\s+/g,' ').trim().toLowerCase().startsWith(`q${qNum} `));
+        if(idx>=0){ qtyCol = idx; break; }
+      }
+      if(qtyCol<0) continue;
+      sheetsProcessed++;
+      for(let r=headerRowIdx+2; r<grid.length; r++){
+        const row = grid[r]||[];
+        const itemCode = row[itemCodeCol];
+        const qty = row[qtyCol];
+        if(itemCode==null || qty==null) continue;
+        const code = String(itemCode).trim();
+        const meta = hierarchy[code];
+        if(!meta){ unmatched.push(`${code} (${town})`); continue; }
+        rows.push({quarter, town, family: meta.family, target_qty: Number(qty)});
+      }
+    }
+    // aggregate duplicates (same quarter+town+family) before upserting
+    const agg = {};
+    rows.forEach(r=>{
+      const key = `${r.quarter}|${r.town}|${r.family}`;
+      if(agg[key]) agg[key].target_qty += r.target_qty;
+      else agg[key] = {...r};
+    });
+    const finalRows = Object.values(agg);
+    const chunkSize = 1000;
+    for(let i=0;i<finalRows.length;i+=chunkSize){
+      const chunk = finalRows.slice(i,i+chunkSize);
+      const {error} = await sb.from('quarterly_target').upsert(chunk, {onConflict:'quarter,town,family'});
+      if(error){ statusEl.innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
+    }
+    state.tvaUploadResult = {kind:'target', ok:true, count:finalRows.length, sheets:sheetsProcessed, unmatched};
+    statusEl.innerHTML = '';
+    render();
+  }catch(e){
+    statusEl.innerHTML = `<div class="err">Could not process file: ${esc(e.message||String(e))}</div>`;
+  }
+}
 
-/* ---- Primary / Secondary achievement: full workbook file upload (matches your ERP matrix export) ---- */
-function renderTvaAchievementFilePanel(kind){
+/* ---- Primary Achievement Upload: item-code-wise, one file per (month, metric) ---- */
+function renderTvaAchievementUploadPanel(){
   const result = state.tvaUploadResult;
-  const label = kind==='primary' ? 'Primary (Orders / Net Sales)' : 'Secondary (Sell-out)';
   return `
   <div class="panel">
-    <h3>Upload ${label} Achievement</h3>
+    <h3>Upload Primary Achievement</h3>
     <div class="row-flex" style="margin-bottom:14px;">
       <div class="field" style="max-width:200px;">
         <label>Month</label>
-        <select id="tvaAch${kind}Month">${TVA_MONTH_OPTIONS.map(m=>`<option value="${m}">${tvaMonthLabel(m)}</option>`).join('')}</select>
+        <select id="tvaAchMonth">${TVA_MONTH_OPTIONS.map(m=>`<option value="${m}">${tvaMonthLabel(m)}</option>`).join('')}</select>
       </div>
-      ${kind==='primary' ? `
       <div class="field" style="max-width:200px;">
         <label>Metric</label>
-        <select id="tvaAchPrimaryMetric">
-          <option value="orders">Primary Orders</option>
-          <option value="sales">Primary Net Sales</option>
+        <select id="tvaAchMetric">
+          <option value="orders">Net Orders</option>
+          <option value="sales">Net Sales</option>
         </select>
-      </div>` : ''}
+      </div>
     </div>
     <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
-      Upload the matrix-format workbook exactly as exported (SKU rows, town columns). Matches town names against this portal's town list automatically.
-      ${kind==='primary' ? ' Since Net Orders and Net Sales are now tracked separately every month, upload each one with the matching Metric selected above — uploading Net Orders won\'t overwrite that month\'s Net Sales, and vice versa.' : ''}
+      Upload one file per month + metric combination (e.g. "July Net Orders Qty(Pcs)"), item-code-wise, town columns — matching your BI export exactly. Handles either a separate Code column or a combined "Code-Description" first cell automatically.
     </p>
-    <label class="upload-box" for="tvaFile${kind}">
+    <label class="upload-box" for="tvaAchFile">
       <div style="font-size:28px;margin-bottom:8px;">⬆</div>
       <div style="font-weight:600;">Click to choose the .xlsx file</div>
-      <input id="tvaFile${kind}" type="file" accept=".xlsx,.xls" onchange="handleTvaAchievementUpload(this.files[0], '${kind}')">
+      <input id="tvaAchFile" type="file" accept=".xlsx,.xls" onchange="handleTvaAchievementFileUpload(this.files[0])">
     </label>
-    <div id="tvaAchStatus${kind}"></div>
-    ${result && result.kind===kind ? renderTvaUploadResultBox(result) : ''}
+    <div id="tvaAchUploadStatus"></div>
+    ${result && result.kind==='achievement' ? renderTvaUploadResultBox(result) : ''}
   </div>`;
 }
 function tvaFindTownFromHeader(h){
@@ -2672,11 +2417,11 @@ function tvaFindTownFromHeader(h){
   const hit = TOWN_TO_RSM[cleaned.toLowerCase()];
   return hit ? hit.town : null;
 }
-async function handleTvaAchievementUpload(file, kind){
+async function handleTvaAchievementFileUpload(file){
   if(!file) return;
-  const month = document.getElementById(`tvaAch${kind}Month`).value;
-  const metric = kind==='primary' ? document.getElementById('tvaAchPrimaryMetric').value : null;
-  const statusEl = document.getElementById(`tvaAchStatus${kind}`);
+  const month = document.getElementById('tvaAchMonth').value;
+  const metric = document.getElementById('tvaAchMetric').value;
+  const statusEl = document.getElementById('tvaAchUploadStatus');
   statusEl.innerHTML = '<div class="loading">Processing workbook…</div>';
   try{
     const buf = await file.arrayBuffer();
@@ -2684,87 +2429,74 @@ async function handleTvaAchievementUpload(file, kind){
     const ws = wb.Sheets[wb.SheetNames[0]];
     const grid = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
 
-    let rows = [];
-    let unmatchedTowns = new Set();
-    if(kind==='primary'){
-      // Format: row5 (idx4) = headers, one lead column ('as') then 'CODE-Town (Region)' per town column.
-      // Data rows: col 0 = 'CODE-Description' combined in one cell — must split off just the code.
-      const headerRow = grid[4] || [];
-      const townCols = {};
-      headerRow.forEach((h,c)=>{ if(c>=1){ const t = tvaFindTownFromHeader(h); if(t) townCols[c]=t; else if(h) unmatchedTowns.add(String(h)); } });
-      for(let r=5; r<grid.length; r++){
-        const row = grid[r]; if(!row || !row[0]) continue;
-        const rawCell = String(row[0]).trim();
-        const skuRaw = rawCell.includes('-') ? rawCell.split('-')[0].trim() : rawCell;
-        const sku = skuRaw.padStart(9,'0');
-        Object.entries(townCols).forEach(([c,town])=>{
-          const v = row[c];
-          if(v!=null && v!==0) rows.push({month, town, sku_code:sku, qty:Number(v), metric});
-        });
-      }
-    } else {
-      // Secondary format: row1 (idx0) = merged town names every 3 cols; row2 (idx1) = sub-headers incl 'Pcs'
-      const townRow = grid[0] || [];
-      const subRow = grid[1] || [];
-      let activeTown = null;
-      const pcsCols = {};
-      for(let c=0; c<townRow.length; c++){
-        if(c<2) continue;
-        if(townRow[c] && !String(townRow[c]).toLowerCase().includes('total sum')){
-          activeTown = tvaFindTownFromHeader(townRow[c]) || null;
-          if(!activeTown && townRow[c]) unmatchedTowns.add(String(townRow[c]));
-        }
-        if(activeTown && subRow[c] && String(subRow[c]).toLowerCase().includes('pcs')){
-          pcsCols[c] = activeTown;
-        }
-      }
-      for(let r=2; r<grid.length; r++){
-        const row = grid[r]; if(!row || !row[0]) continue;
-        const sku = String(Math.trunc(Number(row[0]))).padStart(9,'0');
-        Object.entries(pcsCols).forEach(([c,town])=>{
-          const v = row[c];
-          if(v!=null && v!==0) rows.push({month, town, sku_code:sku, qty:Number(v)});
-        });
-      }
+    // find the header row (contains at least one 'CODE-Town' style cell) and detect
+    // whether column A is a separate clean code or a combined "code-description" cell
+    let headerRowIdx = -1;
+    for(let r=0; r<Math.min(grid.length,10); r++){
+      const row = grid[r]||[];
+      if(row.some(c=> typeof c==='string' && /^\d{6,}-/.test(c))){ headerRowIdx = r; break; }
     }
+    if(headerRowIdx<0){ statusEl.innerHTML = '<div class="err">Could not find the town header row in this file.</div>'; return; }
+    const headerRow = grid[headerRowIdx];
+    const hasCodeCol = headerRow[0] === 'Code' || headerRow[0] === null; // separate Code column sits before Name/Description
+    const dataStartCol = (typeof grid[headerRowIdx+1]?.[0] === 'string' && /^\d{6,}$/.test(grid[headerRowIdx+1][0])) ? 2 : 1;
+    // simplest robust rule: if col0 of a data row is a pure numeric code, there IS a separate code column (col0), town data starts further right;
+    // otherwise col0 has "code-description" combined and town data starts at col1.
+    const sampleDataRow = grid[headerRowIdx+1] || [];
+    const col0IsPureCode = typeof sampleDataRow[0] === 'string' && /^\d+$/.test(sampleDataRow[0].trim());
+    const townStartCol = col0IsPureCode ? 2 : 1;
 
-    // Dedupe by the actual upsert conflict key first — if the same
-    // town+SKU(+metric) combination appears more than once in the raw rows
-    // (e.g. a merged cell or a duplicate line in the source file), sending
-    // both to upsert() in the same batch makes Postgres reject the whole
-    // batch ("ON CONFLICT DO UPDATE command cannot affect row a second
-    // time"), which previously aborted every chunk after it silently.
-    const dedupMap = {};
+    const townCols = {};
+    for(let c=townStartCol; c<headerRow.length; c++){
+      const t = tvaFindTownFromHeader(headerRow[c]);
+      if(t) townCols[c] = t;
+    }
+    const rows = [];
+    for(let r=headerRowIdx+1; r<grid.length; r++){
+      const row = grid[r]; if(!row || row[0]==null) continue;
+      let code;
+      if(col0IsPureCode){
+        code = String(row[0]).trim();
+      } else {
+        const raw = String(row[0]).trim();
+        if(!/^\d/.test(raw)) continue; // skip footer/summary rows like "Grand total for Prod"
+        code = raw.split('-')[0].trim();
+      }
+      if(!/^\d{6,}$/.test(code)) continue;
+      Object.entries(townCols).forEach(([c,town])=>{
+        const v = row[c];
+        if(v!=null && v!==0) rows.push({month, metric, town, sku_code:code, qty:Number(v)});
+      });
+    }
+    // dedupe by conflict key (sum duplicates) to avoid a same-batch upsert error
+    const dedup = {};
     rows.forEach(r=>{
-      const key = kind==='primary' ? `${r.month}|${r.town}|${r.sku_code}|${r.metric}` : `${r.month}|${r.town}|${r.sku_code}`;
-      if(dedupMap[key]) dedupMap[key].qty += r.qty;
-      else dedupMap[key] = {...r};
+      const key = `${r.month}|${r.metric}|${r.town}|${r.sku_code}`;
+      if(dedup[key]) dedup[key].qty += r.qty;
+      else dedup[key] = {...r};
     });
-    rows = Object.values(dedupMap);
-
-    const table = kind==='primary' ? 'monthly_achievement_primary' : 'monthly_achievement_secondary';
-    const conflictKey = kind==='primary' ? 'month,town,sku_code,metric' : 'month,town,sku_code';
-    const chunkSize = 1000;
+    const finalRows = Object.values(dedup);
     let succeeded = 0;
     const chunkErrors = [];
-    for(let i=0;i<rows.length;i+=chunkSize){
-      const chunk = rows.slice(i,i+chunkSize);
-      const {error} = await sb.from(table).upsert(chunk, {onConflict:conflictKey});
-      if(error){ chunkErrors.push(`Rows ${i+1}-${i+chunk.length}: ${error.message}`); continue; } // keep going — don't abandon the rest of the file over one bad chunk
+    const chunkSize = 1000;
+    for(let i=0;i<finalRows.length;i+=chunkSize){
+      const chunk = finalRows.slice(i,i+chunkSize);
+      const {error} = await sb.from('monthly_achievement_primary_v2').upsert(chunk, {onConflict:'month,metric,town,sku_code'});
+      if(error){ chunkErrors.push(`Rows ${i+1}-${i+chunk.length}: ${error.message}`); continue; }
       succeeded += chunk.length;
     }
+    tvaActiveMonthsCache = {}; // this upload may have just made a new month "active"
     if(chunkErrors.length){
-      statusEl.innerHTML = `<div class="err">${succeeded} of ${rows.length} rows saved. ${chunkErrors.length} chunk(s) failed and were skipped:<br>${chunkErrors.map(esc).join('<br>')}<br>Please re-upload the same file — already-saved rows will just be overwritten with the same values, so this is safe to retry.</div>`;
+      statusEl.innerHTML = `<div class="err">${succeeded} of ${finalRows.length} rows saved. ${chunkErrors.length} chunk(s) failed — safe to re-upload the same file, already-saved rows just get overwritten with the same values.<br>${chunkErrors.map(esc).join('<br>')}</div>`;
       return;
     }
-    state.tvaUploadResult = {kind, ok:true, count:succeeded, unmatched: Array.from(unmatchedTowns)};
+    state.tvaUploadResult = {kind:'achievement', ok:true, count:succeeded};
     statusEl.innerHTML = '';
     render();
   }catch(e){
     statusEl.innerHTML = `<div class="err">Could not process file: ${esc(e.message||String(e))}</div>`;
   }
 }
-
 /* ============================= INIT ============================= */
 restoreSession();
 render();
