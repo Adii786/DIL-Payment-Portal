@@ -223,7 +223,7 @@ const TOWN_DATA = {
   danish:  { name:'Danish Imran',    towns:['Lahore','Gujranwala','Kasur','Sheikhupura','Pattoki','Kamonki'] },
   qaiser:  { name:'Qaiser Raza Baig',towns:['Faisalabad','Sahiwal','Okara','Pak Pattan','Burewala'] },
   sajid:   { name:'Sajid Subhani',   towns:['Rawalpindi','Wah Cantt','Chakwal','Dina','Lalamusa','Bhimber','Gujrat','Sargodha','Mandi Bahauddin','Phalia','Jhang Saddar','Pirmahal','Mianwali','DI Khan','Bannu','Layyah','Hafizabad','Wazirabad','Sialkot','Narowal'] },
-  arif:    { name:'Arif Saeed',      towns:['Peshawar','Kohat','Mingora','Dir','Skardu','Gilgit','Mardan','Takht Bahi','Muzaffarabad','Abbottabad','Attock City','Haripur','Batgram'] }
+  arif:    { name:'Arif Saeed',      towns:['Peshawar','Kohat','Mingora','Dir','Skardu','Gilgit','Mardan','Takht Bahi','Muzaffarabad','Abbottabad','Attock City','Batgram','Haripur'] }
 };
 const RSM_IDS = Object.keys(TOWN_DATA);
 const TOWN_TO_RSM = {};
@@ -2492,6 +2492,16 @@ async function handleTvaAchievementFileUpload(file){
       else dedup[key] = {...r};
     });
     const finalRows = Object.values(dedup);
+
+    // Clear ALL existing rows for this exact month+metric FIRST, before inserting
+    // the new parse. Without this, a SKU whose true value has dropped to zero in
+    // a corrected file would never get its old nonzero row overwritten — upserts
+    // only touch rows that are actually written, and zero values are deliberately
+    // not written (to avoid bloating the table), so a stale nonzero row could
+    // otherwise sit there forever even after a fully correct re-upload.
+    const {error: delError} = await sb.from('monthly_achievement_primary_v2').delete().eq('month', month).eq('metric', metric);
+    if(delError){ statusEl.innerHTML = `<div class="err">Could not clear old data before uploading: ${esc(delError.message)}</div>`; return; }
+
     let succeeded = 0;
     const chunkErrors = [];
     const chunkSize = 1000;
