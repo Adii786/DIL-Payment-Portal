@@ -2208,12 +2208,20 @@ function tvaFilterHierarchy(v){ state.tvaHierarchyFilter=v; state.tvaHierarchyPa
    would silently show price=0 everywhere and never appear in the Price &
    Category screen for someone to fix. */
 async function ensureFamilyCategoryExists(families){
-  const known = new Set((state.tvaFamilyMetaList||[]).map(r=>r.family));
-  const missing = [...new Set(families)].filter(f=>f && !known.has(f));
-  if(!missing.length) return;
-  const rows = missing.map(f=>({family:f, category:f, subtotal_uom:'pcs', price:0, price_needs_review:true}));
-  const {error} = await sb.from('family_category').insert(rows);
-  if(error){ console.error('Could not auto-create family_category row(s):', error); return; }
+  const uniqueFamilies = [...new Set(families)].filter(Boolean);
+  if(!uniqueFamilies.length) return;
+  // Always attempt this for every family passed in — don't rely on the
+  // client-side tvaFamilyMetaList cache to decide what's "missing", since
+  // that cache can be stale and cause this to silently no-op. Using an
+  // upsert with ignoreDuplicates means it's always safe to call: existing
+  // families are left completely untouched, only genuinely new ones get
+  // a placeholder row created.
+  const rows = uniqueFamilies.map(f=>({family:f, category:f, subtotal_uom:'pcs', price:0, price_needs_review:true}));
+  const {error} = await sb.from('family_category').upsert(rows, {onConflict:'family', ignoreDuplicates:true});
+  if(error){
+    alert(`Saved the SKU, but could not create a Price & Category entry for the family: ${error.message}\nGo to Price & Category Update and add it manually, or ask me to fix it.`);
+    return;
+  }
   tvaCache.familyMeta = null;
   state.tvaFamilyMetaList = await fetchFamilyMetaList();
 }
