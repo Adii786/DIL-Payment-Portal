@@ -223,7 +223,7 @@ const TOWN_DATA = {
   danish:  { name:'Danish Imran',    towns:['Lahore','Gujranwala','Kasur','Sheikhupura','Pattoki','Kamonki'] },
   qaiser:  { name:'Qaiser Raza Baig',towns:['Faisalabad','Sahiwal','Okara','Pak Pattan','Burewala'] },
   sajid:   { name:'Sajid Subhani',   towns:['Rawalpindi','Wah Cantt','Chakwal','Dina','Lalamusa','Bhimber','Gujrat','Sargodha','Mandi Bahauddin','Phalia','Jhang Saddar','Pirmahal','Mianwali','DI Khan','Bannu','Layyah','Hafizabad','Wazirabad','Sialkot','Narowal'] },
-  arif:    { name:'Arif Saeed',      towns:['Peshawar','Kohat','Mingora','Dir','Skardu','Gilgit','Mardan','Takht Bahi','Muzaffarabad','Abbottabad','Attock City','Batgram','Haripur'] }
+  arif:    { name:'Arif Saeed',      towns:['Peshawar','Kohat','Mingora','Dir','Skardu','Gilgit','Mardan','Takht Bahi','Muzaffarabad','Abbottabad','Attock City','Batgram','Sadda','Haripur'] }
 };
 const RSM_IDS = Object.keys(TOWN_DATA);
 const TOWN_TO_RSM = {};
@@ -263,7 +263,7 @@ let state = {
   pastDueDocxResult:null,
   tvaQuarter:null, tvaMode:'volume', tvaSelectedTown:null, tvaRows:null, tvaExpandedRsm:null,
   tvaNationalRows:null,
-  tvaUploadSubTab:'hierarchy', tvaUploadResult:null, tvaHierarchyList:null, tvaFamilyMetaList:null, tvaHierarchyFilter:'',
+  tvaUploadSubTab:'hierarchy', tvaUploadResult:null, tvaHierarchyList:null, tvaFamilyMetaList:null, tvaHierarchyFilter:'', tvaHierarchyPage:0,
   adminUploadSubTab:'docx',
   customerTownMapList:null,
   lastDocxInvoiceRows:null,
@@ -2167,6 +2167,11 @@ function renderTvaHierarchyPanel(){
   const filter = (state.tvaHierarchyFilter||'').toLowerCase();
   const filtered = filter ? list.filter(r=> r.sku_code.includes(filter) || r.sku_name.toLowerCase().includes(filter) || r.family.toLowerCase().includes(filter)) : list;
   const families = [...new Set(list.map(r=>r.family))].sort();
+  const pageSize = 100;
+  const page = state.tvaHierarchyPage || 0;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const clampedPage = Math.min(page, totalPages-1);
+  const pageRows = filtered.slice(clampedPage*pageSize, clampedPage*pageSize+pageSize);
   return `
   <div class="panel">
     <h3>SKU → Family Mapping <span class="cnt">${list.length} SKUs · corrections apply instantly everywhere</span></h3>
@@ -2175,30 +2180,35 @@ function renderTvaHierarchyPanel(){
     <table class="responsive-table">
       <thead><tr><th>SKU Code</th><th>Description</th><th>Family</th><th></th></tr></thead>
       <tbody>
-      ${filtered.slice(0,200).map((r,i)=>`<tr>
+      ${pageRows.map((r,i)=>`<tr>
         <td data-label="SKU Code">${esc(r.sku_code)}</td>
         <td data-label="Description">${esc(r.sku_name)}</td>
         <td data-label="Family"><input id="hierFamInput${i}" list="tvaFamilyOptions" value="${esc(r.family)}" style="width:100%;max-width:260px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
-        <td><button class="btn btn-primary btn-sm" onclick="handleSaveHierarchy('${escJs(r.sku_code)}', document.getElementById('hierFamInput${i}').value)">Save</button></td>
+        <td><button class="btn btn-primary btn-sm" onclick="handleSaveHierarchy('${escJs(r.sku_code)}', '${escJs(r.sku_name)}', document.getElementById('hierFamInput${i}').value)">Save</button></td>
       </tr>`).join('')}
       </tbody>
     </table>
-    ${filtered.length>200 ? `<p class="footer-note" style="text-align:left;">Showing first 200 of ${filtered.length} matches — refine your search to see more.</p>` : ''}
+    <div class="row-flex" style="align-items:center;gap:10px;margin-top:10px;">
+      <button class="btn btn-ghost btn-sm" ${clampedPage<=0?'disabled':''} onclick="tvaHierarchyPage(${clampedPage-1})">← Previous</button>
+      <span style="font-size:12.5px;color:var(--muted);">Page ${clampedPage+1} of ${totalPages} · ${filtered.length} SKU${filtered.length===1?'':'s'}${filter?' matching':''}</span>
+      <button class="btn btn-ghost btn-sm" ${clampedPage>=totalPages-1?'disabled':''} onclick="tvaHierarchyPage(${clampedPage+1})">Next →</button>
+    </div>
     <datalist id="tvaFamilyOptions">${families.map(f=>`<option value="${esc(f)}">`).join('')}</datalist>
   </div>
   <div class="panel">
     <h3>Bulk Update</h3>
-    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Paste one SKU per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">SKU Code, Family</code>.</p>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Paste one SKU per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">SKU Code, Family</code>. If a SKU doesn't already exist, also include its description as a third column: <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">SKU Code, Family, Description</code>.</p>
     <textarea id="bulkHierarchyInput" rows="6" placeholder="036062556, Ball Pen BP-1" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
     <button class="btn btn-primary" style="margin-top:10px;" onclick="handleBulkHierarchyUpload()">Update Mapping</button>
     <div id="hierarchyUploadStatus"></div>
   </div>`;
 }
-function tvaFilterHierarchy(v){ state.tvaHierarchyFilter=v; render(); }
-async function handleSaveHierarchy(skuCode, family){
+function tvaHierarchyPage(p){ state.tvaHierarchyPage = Math.max(0,p); render(); }
+function tvaFilterHierarchy(v){ state.tvaHierarchyFilter=v; state.tvaHierarchyPage=0; render(); }
+async function handleSaveHierarchy(skuCode, skuName, family){
   family = family.trim();
   if(!family){ alert('Enter a family.'); return; }
-  const {error} = await sb.from('product_hierarchy_v4').upsert({sku_code:skuCode, family}, {onConflict:'sku_code'});
+  const {error} = await sb.from('product_hierarchy_v4').upsert({sku_code:skuCode, sku_name:skuName, family}, {onConflict:'sku_code'});
   if(error){ alert('Could not save: '+error.message); return; }
   tvaCache.hierarchy = null;
   state.tvaHierarchyList = await fetchHierarchyList();
@@ -2207,12 +2217,16 @@ async function handleSaveHierarchy(skuCode, family){
 async function handleBulkHierarchyUpload(){
   const text = document.getElementById('bulkHierarchyInput').value;
   if(!text.trim()){ alert('Paste at least one line.'); return; }
+  const existingByCode = {};
+  (state.tvaHierarchyList||[]).forEach(r=> existingByCode[r.sku_code] = r.sku_name);
   const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
   const rows = [], unmatched = [];
   lines.forEach(line=>{
     const parts = line.split(/[,\t]/).map(p=>p.trim());
-    if(parts.length<2 || !parts[1]){ unmatched.push(line); return; }
-    rows.push({sku_code:parts[0], family:parts[1]});
+    if(parts.length<2 || !parts[1]){ unmatched.push(`${line} — missing family`); return; }
+    const skuName = parts[2] || existingByCode[parts[0]];
+    if(!skuName){ unmatched.push(`${line} — new SKU, needs a description as a 3rd column`); return; }
+    rows.push({sku_code:parts[0], sku_name:skuName, family:parts[1]});
   });
   if(rows.length){
     const {error} = await sb.from('product_hierarchy_v4').upsert(rows, {onConflict:'sku_code'});
@@ -2220,7 +2234,7 @@ async function handleBulkHierarchyUpload(){
   }
   tvaCache.hierarchy = null;
   state.tvaHierarchyList = await fetchHierarchyList();
-  document.getElementById('hierarchyUploadStatus').innerHTML = `<div style="margin-top:10px;padding:10px;border-radius:8px;background:var(--green-bg);">${rows.length} updated.${unmatched.length?` ${unmatched.length} line(s) skipped.`:''}</div>`;
+  document.getElementById('hierarchyUploadStatus').innerHTML = `<div style="margin-top:10px;padding:10px;border-radius:8px;background:var(--green-bg);">${rows.length} updated.${unmatched.length?` ${unmatched.length} line(s) skipped:<br>${unmatched.map(esc).join('<br>')}`:''}</div>`;
   render();
 }
 
