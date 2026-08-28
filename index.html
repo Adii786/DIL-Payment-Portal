@@ -223,7 +223,7 @@ const TOWN_DATA = {
   danish:  { name:'Danish Imran',    towns:['Lahore','Gujranwala','Kasur','Sheikhupura','Pattoki','Kamonki'] },
   qaiser:  { name:'Qaiser Raza Baig',towns:['Faisalabad','Sahiwal','Okara','Pak Pattan','Burewala'] },
   sajid:   { name:'Sajid Subhani',   towns:['Rawalpindi','Wah Cantt','Chakwal','Dina','Lalamusa','Bhimber','Gujrat','Sargodha','Mandi Bahauddin','Phalia','Jhang Saddar','Pirmahal','Mianwali','DI Khan','Bannu','Layyah','Hafizabad','Wazirabad','Sialkot','Narowal'] },
-  arif:    { name:'Arif Saeed',      towns:['Peshawar','Kohat','Mingora','Dir','Skardu','Gilgit','Mardan','Takht Bahi','Muzaffarabad','Abbottabad','Attock City','Batgram','Sadda','Haripur'] }
+  arif:    { name:'Arif Saeed',      towns:['Peshawar','Kohat','Mingora','Dir','Skardu','Gilgit','Mardan','Takht Bahi','Muzaffarabad','Abbottabad','Attock City','Sadda','Haripur','Batgram'] }
 };
 const RSM_IDS = Object.keys(TOWN_DATA);
 const TOWN_TO_RSM = {};
@@ -2036,41 +2036,39 @@ function tvaDownloadCsv(name){
   const rows = state.tvaRows;
   if(!rows) return;
   const sorted = [...rows].sort((a,b)=> a.family.localeCompare(b.family));
-  const activeMonths = rows.length ? rows[0].months.map(m=>m.month) : [];
-  let header = 'Category,Product,UOM,Sales Quota Qty,Sales Quota Value';
-  activeMonths.forEach(m=>{ header += `,${m} Orders Qty,${m} Orders Value,${m} Sales Qty,${m} Sales Value`; });
-  header += ',Total Net Sales Qty,Total Net Sales Value,Var %\n';
+  const allMonths = QUARTER_MONTHS[state.tvaQuarter]; // always all 3 months, unlike the on-screen view which only shows "active" ones
+  let header = 'Category,Product,UOM,Sales Quota Qty';
+  allMonths.forEach(m=>{ header += `,${m} Orders Qty,${m} Sales Qty`; });
+  header += '\n';
   let csv = header;
   const byCategory = {};
   sorted.forEach(r=> (byCategory[r.category] = byCategory[r.category]||[]).push(r));
   const categoryOrder = Object.keys(byCategory).sort((a,b)=>a.localeCompare(b));
 
+  function monthQty(r, m){
+    const md = r.months.find(x=>x.month===m);
+    return md ? {orders:md.ordersQty, sales:md.salesQty} : {orders:0, sales:0};
+  }
   function familyLine(cat, r){
-    let line = `"${cat}","${r.family}",pcs,${r.targetQty.toFixed(2)},${r.targetValue.toFixed(2)}`;
-    r.months.forEach(md=>{ line += `,${md.ordersQty.toFixed(2)},${md.ordersValue.toFixed(2)},${md.salesQty.toFixed(2)},${md.salesValue.toFixed(2)}`; });
-    const varPctStr = r.varPct!=null ? (r.varPct*100).toFixed(2)+'%' : '';
-    return line + `,${r.totalSalesQty.toFixed(2)},${r.totalSalesValue.toFixed(2)},${varPctStr}\n`;
+    let line = `"${cat}","${r.family}",pcs,${r.targetQty.toFixed(2)}`;
+    allMonths.forEach(m=>{ const q = monthQty(r,m); line += `,${q.orders.toFixed(2)},${q.sales.toFixed(2)}`; });
+    return line + '\n';
   }
   function subtotalLine(cat, famRows){
     const uom = famRows[0].subtotalUom;
-    let ct=0, cs=0, ctv=0, csv_=0;
-    const cm = activeMonths.map(()=>({oq:0,ov:0,sq:0,sv:0}));
+    let ct=0;
+    const cm = allMonths.map(()=>({orders:0,sales:0}));
     famRows.forEach(r=>{
       ct += convertForSubtotal(r.targetQty, uom, r.conversionFactor);
-      cs += convertForSubtotal(r.totalSalesQty, uom, r.conversionFactor);
-      ctv += r.targetValue; csv_ += r.totalSalesValue;
-      r.months.forEach((md,i)=>{
-        cm[i].oq += convertForSubtotal(md.ordersQty, uom, r.conversionFactor);
-        cm[i].ov += md.ordersValue;
-        cm[i].sq += convertForSubtotal(md.salesQty, uom, r.conversionFactor);
-        cm[i].sv += md.salesValue;
+      allMonths.forEach((m,i)=>{
+        const q = monthQty(r,m);
+        cm[i].orders += convertForSubtotal(q.orders, uom, r.conversionFactor);
+        cm[i].sales += convertForSubtotal(q.sales, uom, r.conversionFactor);
       });
     });
-    const varPct = ct!==0 ? (cs-ct)/ct : null;
-    let line = `"${cat}","Total ${cat}","${uom}",${ct.toFixed(2)},${ctv.toFixed(2)}`;
-    cm.forEach(m=>{ line += `,${m.oq.toFixed(2)},${m.ov.toFixed(2)},${m.sq.toFixed(2)},${m.sv.toFixed(2)}`; });
-    const varPctStr = varPct!=null ? (varPct*100).toFixed(2)+'%' : '';
-    return line + `,${cs.toFixed(2)},${csv_.toFixed(2)},${varPctStr}\n`;
+    let line = `"${cat}","Total ${cat}","${uom}",${ct.toFixed(2)}`;
+    cm.forEach(m=>{ line += `,${m.orders.toFixed(2)},${m.sales.toFixed(2)}`; });
+    return line + '\n';
   }
 
   categoryOrder.forEach(cat=>{
@@ -2205,11 +2203,26 @@ function renderTvaHierarchyPanel(){
 }
 function tvaHierarchyPage(p){ state.tvaHierarchyPage = Math.max(0,p); render(); }
 function tvaFilterHierarchy(v){ state.tvaHierarchyFilter=v; state.tvaHierarchyPage=0; render(); }
+/* Ensures every family referenced by the hierarchy has a family_category row
+   to be priced/categorized against — otherwise a brand-new or renamed family
+   would silently show price=0 everywhere and never appear in the Price &
+   Category screen for someone to fix. */
+async function ensureFamilyCategoryExists(families){
+  const known = new Set((state.tvaFamilyMetaList||[]).map(r=>r.family));
+  const missing = [...new Set(families)].filter(f=>f && !known.has(f));
+  if(!missing.length) return;
+  const rows = missing.map(f=>({family:f, category:f, subtotal_uom:'pcs', price:0, price_needs_review:true}));
+  const {error} = await sb.from('family_category').insert(rows);
+  if(error){ console.error('Could not auto-create family_category row(s):', error); return; }
+  tvaCache.familyMeta = null;
+  state.tvaFamilyMetaList = await fetchFamilyMetaList();
+}
 async function handleSaveHierarchy(skuCode, skuName, family){
   family = family.trim();
   if(!family){ alert('Enter a family.'); return; }
   const {error} = await sb.from('product_hierarchy_v4').upsert({sku_code:skuCode, sku_name:skuName, family}, {onConflict:'sku_code'});
   if(error){ alert('Could not save: '+error.message); return; }
+  await ensureFamilyCategoryExists([family]);
   tvaCache.hierarchy = null;
   state.tvaHierarchyList = await fetchHierarchyList();
   render();
@@ -2231,6 +2244,7 @@ async function handleBulkHierarchyUpload(){
   if(rows.length){
     const {error} = await sb.from('product_hierarchy_v4').upsert(rows, {onConflict:'sku_code'});
     if(error){ document.getElementById('hierarchyUploadStatus').innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
+    await ensureFamilyCategoryExists(rows.map(r=>r.family));
   }
   tvaCache.hierarchy = null;
   state.tvaHierarchyList = await fetchHierarchyList();
