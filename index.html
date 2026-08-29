@@ -263,7 +263,7 @@ let state = {
   pastDueDocxResult:null,
   tvaQuarter:null, tvaMode:'volume', tvaSelectedTown:null, tvaRows:null, tvaExpandedRsm:null,
   tvaNationalRows:null,
-  tvaUploadSubTab:'hierarchy', tvaUploadResult:null, tvaHierarchyList:null, tvaFamilyMetaList:null, tvaHierarchyFilter:'', tvaHierarchyPage:0,
+  tvaUploadSubTab:'hierarchy', tvaUploadResult:null, tvaHierarchyList:null, tvaFamilyMetaList:null, tvaHierarchyFilter:'', tvaHierarchyPage:0, tvaMappingFilter:'', tvaMappingPage:0,
   adminUploadSubTab:'docx',
   customerTownMapList:null,
   lastDocxInvoiceRows:null,
@@ -1713,7 +1713,7 @@ async function fetchQuarterlyTarget(quarter, town){
 }
 async function fetchQuarterlyTargetBulk(quarter, towns){
   if(!sb) return {};
-  const data = await fetchAllPaged(()=> sb.from('quarterly_target').select('*').eq('quarter',quarter).in('town', towns));
+  const data = await fetchAllPaged(()=> sb.from('quarterly_target').select('*').eq('quarter',quarter).in('town', towns).order('id'));
   const byTown = {};
   data.forEach(r=>{ (byTown[r.town]=byTown[r.town]||{})[r.family] = (byTown[r.town][r.family]||0) + Number(r.target_qty||0); });
   return byTown;
@@ -1728,7 +1728,7 @@ async function fetchAchievementQtyV2(month, metric, town){
 }
 async function fetchAchievementQtyV2Bulk(month, metric, towns){
   if(!sb) return {};
-  const data = await fetchAllPaged(()=> sb.from('monthly_achievement_primary_v2').select('*').eq('month',month).eq('metric',metric).in('town', towns));
+  const data = await fetchAllPaged(()=> sb.from('monthly_achievement_primary_v2').select('*').eq('month',month).eq('metric',metric).in('town', towns).order('id'));
   const byTown = {};
   data.forEach(r=>{ (byTown[r.town]=byTown[r.town]||{})[r.sku_code] = (byTown[r.town][r.sku_code]||0) + Number(r.qty||0); });
   return byTown;
@@ -2131,8 +2131,16 @@ function ALL_TOWNS_FLAT(){ return RSM_IDS.flatMap(id=>TOWN_DATA[id].towns); }
 function setTvaUploadSubTab(t){ state.tvaUploadSubTab=t; state.tvaUploadResult=null; render(); }
 async function loadTvaUploadView(){
   const body = document.getElementById('nsmBody');
-  if(!state.tvaHierarchyList) state.tvaHierarchyList = await fetchHierarchyList();
-  if(!state.tvaFamilyMetaList) state.tvaFamilyMetaList = await fetchFamilyMetaList();
+  if(state.tvaUploadSubTab==='mapping'){
+    // Always fetch fresh here — this view exists specifically so corrections
+    // made anywhere else are guaranteed to show up immediately, never a
+    // stale cached copy.
+    state.tvaHierarchyList = await fetchHierarchyList();
+    state.tvaFamilyMetaList = await fetchFamilyMetaList();
+  } else {
+    if(!state.tvaHierarchyList) state.tvaHierarchyList = await fetchHierarchyList();
+    if(!state.tvaFamilyMetaList) state.tvaFamilyMetaList = await fetchFamilyMetaList();
+  }
   body.innerHTML = renderTvaUploadPanel();
 }
 async function fetchHierarchyList(){
@@ -2153,10 +2161,73 @@ function renderTvaUploadPanel(){
   <div class="tabs" style="margin-bottom:18px;">
     <button class="tab ${sub==='hierarchy'?'active':''}" onclick="setTvaUploadSubTab('hierarchy')">Hierarchy Update</button>
     <button class="tab ${sub==='pricecat'?'active':''}" onclick="setTvaUploadSubTab('pricecat')">Price &amp; Category Update</button>
+    <button class="tab ${sub==='mapping'?'active':''}" onclick="setTvaUploadSubTab('mapping')">Full Mapping</button>
     <button class="tab ${sub==='target'?'active':''}" onclick="setTvaUploadSubTab('target')">Target Upload</button>
     <button class="tab ${sub==='achievement'?'active':''}" onclick="setTvaUploadSubTab('achievement')">Primary Achievement Upload</button>
   </div>
-  ${sub==='hierarchy' ? renderTvaHierarchyPanel() : sub==='pricecat' ? renderTvaPriceCategoryPanel() : sub==='target' ? renderTvaTargetUploadPanel() : renderTvaAchievementUploadPanel()}`;
+  ${sub==='hierarchy' ? renderTvaHierarchyPanel() : sub==='pricecat' ? renderTvaPriceCategoryPanel() : sub==='mapping' ? renderTvaFullMappingPanel() : sub==='target' ? renderTvaTargetUploadPanel() : renderTvaAchievementUploadPanel()}`;
+}
+
+/* ---- Full Mapping: read-only SKU -> Family -> Category reference, joined fresh every time ---- */
+function renderTvaFullMappingPanel(){
+  const hierarchy = state.tvaHierarchyList || [];
+  const metaByFamily = {};
+  (state.tvaFamilyMetaList||[]).forEach(r=> metaByFamily[r.family] = r);
+  const filter = (state.tvaMappingFilter||'').toLowerCase();
+  const joined = hierarchy.map(h=>{
+    const meta = metaByFamily[h.family] || {};
+    return {sku_code:h.sku_code, sku_name:h.sku_name, family:h.family, category:meta.category||'', price:meta.price ?? '', subtotal_uom:meta.subtotal_uom||''};
+  });
+  const filtered = filter ? joined.filter(r=> r.sku_code.includes(filter) || r.sku_name.toLowerCase().includes(filter) || r.family.toLowerCase().includes(filter) || r.category.toLowerCase().includes(filter)) : joined;
+  const pageSize = 100;
+  const page = state.tvaMappingPage || 0;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const clampedPage = Math.min(page, totalPages-1);
+  const pageRows = filtered.slice(clampedPage*pageSize, clampedPage*pageSize+pageSize);
+  return `
+  <div class="panel">
+    <h3>SKU → Family → Category <span class="cnt">${joined.length} SKUs · read-only reference, always current — re-fetched fresh every time you open this tab</span></h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">To correct anything here, use Hierarchy Update (SKU's family) or Price &amp; Category Update (family's category/price) — this screen just shows the combined result of both, live.</p>
+    <div class="row-flex" style="margin-bottom:12px;">
+      <input id="mappingFilterInput" placeholder="Search SKU code, description, family, or category…" value="${esc(state.tvaMappingFilter||'')}" oninput="tvaFilterMapping(this.value)" style="width:100%;max-width:420px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;">
+      <button class="btn btn-ghost btn-sm" onclick="tvaDownloadMappingCsv()">⬇ Download CSV</button>
+    </div>
+    <table class="responsive-table">
+      <thead><tr><th>SKU Code</th><th>Description</th><th>Family</th><th>Category</th><th class="num">Price</th></tr></thead>
+      <tbody>
+      ${pageRows.map(r=>`<tr>
+        <td data-label="SKU Code">${esc(r.sku_code)}</td>
+        <td data-label="Description">${esc(r.sku_name)}</td>
+        <td data-label="Family">${esc(r.family)}</td>
+        <td data-label="Category">${esc(r.category)}</td>
+        <td class="num" data-label="Price">${r.price}</td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+    <div class="row-flex" style="align-items:center;gap:10px;margin-top:10px;">
+      <button class="btn btn-ghost btn-sm" ${clampedPage<=0?'disabled':''} onclick="tvaMappingPage(${clampedPage-1})">← Previous</button>
+      <span style="font-size:12.5px;color:var(--muted);">Page ${clampedPage+1} of ${totalPages} · ${filtered.length} SKU${filtered.length===1?'':'s'}${filter?' matching':''}</span>
+      <button class="btn btn-ghost btn-sm" ${clampedPage>=totalPages-1?'disabled':''} onclick="tvaMappingPage(${clampedPage+1})">Next →</button>
+    </div>
+  </div>`;
+}
+function tvaFilterMapping(v){ state.tvaMappingFilter=v; state.tvaMappingPage=0; render(); }
+function tvaMappingPage(p){ state.tvaMappingPage = Math.max(0,p); render(); }
+function tvaDownloadMappingCsv(){
+  const hierarchy = state.tvaHierarchyList || [];
+  const metaByFamily = {};
+  (state.tvaFamilyMetaList||[]).forEach(r=> metaByFamily[r.family] = r);
+  let csv = 'SKU Code,Description,Family,Category,Subtotal Unit,Price\n';
+  hierarchy.forEach(h=>{
+    const meta = metaByFamily[h.family] || {};
+    csv += `"${h.sku_code}","${(h.sku_name||'').replace(/"/g,'""')}","${h.family}","${meta.category||''}","${meta.subtotal_uom||''}",${meta.price ?? ''}\n`;
+  });
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `SKU_Family_Category_Mapping_${todayStr()}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
 }
 
 /* ---- Hierarchy Update: correct which family a SKU belongs to ---- */
