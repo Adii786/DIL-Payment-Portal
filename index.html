@@ -2581,12 +2581,22 @@ async function handleTvaAchievementFileUpload(file){
     if(isFlatFormat){
       const townCol = firstRow.indexOf('town');
       const skuCol = firstRow.findIndex(c=>c==='sku code' || c==='item_id' || c==='item id');
-      // find the qty column matching the selected metric — skip any Value column,
-      // since only Qty is stored (Value is always computed from price at view time)
+      // find the qty column matching the selected metric — must be the Pcs
+      // measure specifically, not Units (a pack count) or Value. Sales
+      // Analyzer exposes both "...Qty(Pcs)" and "...Qty(Units)" as separate
+      // measures — silently accepting a Units column would store pack
+      // counts as if they were individual pieces, wrong by each product's
+      // pack size, with no error to flag it.
       const wantOrders = metric==='orders';
-      const qtyCol = firstRow.findIndex(c=> c.includes('qty') && (wantOrders ? c.includes('order') : c.includes('sale')));
+      const metricWord = wantOrders ? 'order' : 'sale';
+      const qtyCol = firstRow.findIndex(c=> c.includes('qty') && c.includes(metricWord) && c.includes('pcs'));
+      const unitsColPresent = firstRow.some(c=> c.includes('qty') && c.includes(metricWord) && c.includes('unit'));
+      if(qtyCol<0 && unitsColPresent){
+        statusEl.innerHTML = `<div class="err">This file has a "Net ${wantOrders?'Order':'Sales'} Qty(Units)" column, not "...Qty(Pcs)". Units are pack counts, not individual pieces — uploading this would silently store the wrong quantities. Please re-export from Oracle Analytics using the "Net ${wantOrders?'Order':'Sales'} Qty(Pcs)" measure instead.</div>`;
+        return;
+      }
       if(townCol<0 || skuCol<0 || qtyCol<0){
-        statusEl.innerHTML = `<div class="err">This looks like a flat export, but couldn't find a ${wantOrders?'"Net Order Qty"':'"Net Sales Qty"'} column matching the Metric selected above (found columns: ${(grid[0]||[]).join(', ')}). Check the Metric dropdown matches what you actually exported.</div>`;
+        statusEl.innerHTML = `<div class="err">This looks like a flat export, but couldn't find a "Net ${wantOrders?'Order':'Sales'} Qty(Pcs)" column matching the Metric selected above (found columns: ${(grid[0]||[]).join(', ')}). Check the Metric dropdown matches what you actually exported.</div>`;
         return;
       }
       for(let r=1; r<grid.length; r++){
