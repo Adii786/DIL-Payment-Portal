@@ -2608,7 +2608,12 @@ async function handleTvaAchievementFileUpload(file){
         if(townRaw==null || skuRaw==null || qty==null || qty===0) continue;
         const town = tvaFindTownFromHeader(townRaw); // same alias/parsing logic as the wide format's town headers
         if(!town) continue; // town not in your 63 — correctly excluded, not an error
-        const code = String(skuRaw).trim();
+        // Pad to 9 digits — the CSV/XLSX parser can silently read a leading-zero
+        // code like "036056264" as the number 36056264, dropping the zero. Every
+        // SKU code in this system is consistently 9 digits, so restoring it here
+        // guarantees a match against product_hierarchy_v4 regardless of how the
+        // parser interpreted the cell.
+        const code = String(skuRaw).trim().padStart(9,'0');
         if(!/^\d{6,}$/.test(code)) continue;
         rows.push({month, metric, town, sku_code:code, qty:Number(qty)});
       }
