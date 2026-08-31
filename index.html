@@ -2523,7 +2523,7 @@ function renderTvaAchievementUploadPanel(){
       </div>
     </div>
     <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
-      Upload one file per month + metric combination (e.g. "July Net Orders Qty(Pcs)"), item-code-wise, town columns — matching your BI export exactly. Handles either a separate Code column or a combined "Code-Description" first cell automatically.
+      Upload one file per month + metric combination. Two formats are auto-detected: your ERP's "wide" BI export (SKU rows × Town columns), or a "flat" export from Oracle Analytics (one row per Town + SKU Code, with a Net Order/Net Sales Qty column) — export by Town and Item ID with a Net Order Qty or Net Sales Qty measure, matching whichever Metric you pick below.
     </p>
     <label class="upload-box" for="tvaAchFile">
       <div style="font-size:28px;margin-bottom:8px;">⬆</div>
@@ -2570,44 +2570,76 @@ async function handleTvaAchievementFileUpload(file){
     const ws = wb.Sheets[wb.SheetNames[0]];
     const grid = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
 
-    // find the header row (contains at least one 'CODE-Town' style cell) and detect
-    // whether column A is a separate clean code or a combined "code-description" cell
-    let headerRowIdx = -1;
-    for(let r=0; r<Math.min(grid.length,10); r++){
-      const row = grid[r]||[];
-      if(row.some(c=> typeof c==='string' && /^\d{6,}-/.test(c))){ headerRowIdx = r; break; }
-    }
-    if(headerRowIdx<0){ statusEl.innerHTML = '<div class="err">Could not find the town header row in this file.</div>'; return; }
-    const headerRow = grid[headerRowIdx];
-    const hasCodeCol = headerRow[0] === 'Code' || headerRow[0] === null; // separate Code column sits before Name/Description
-    const dataStartCol = (typeof grid[headerRowIdx+1]?.[0] === 'string' && /^\d{6,}$/.test(grid[headerRowIdx+1][0])) ? 2 : 1;
-    // simplest robust rule: if col0 of a data row is a pure numeric code, there IS a separate code column (col0), town data starts further right;
-    // otherwise col0 has "code-description" combined and town data starts at col1.
-    const sampleDataRow = grid[headerRowIdx+1] || [];
-    const col0IsPureCode = typeof sampleDataRow[0] === 'string' && /^\d+$/.test(sampleDataRow[0].trim());
-    const townStartCol = col0IsPureCode ? 2 : 1;
+    // Auto-detect format: Oracle Analytics exports are "flat" — one row per
+    // Town+SKU, with plain column headers (Town, SKU Code, a metric column)
+    // in row 1. Your ERP's own BI exports are "wide" — SKU rows x Town
+    // columns, with Time/Reason/Measure label rows before the real header.
+    const firstRow = (grid[0]||[]).map(c=> c==null ? '' : String(c).trim().toLowerCase());
+    const isFlatFormat = firstRow.some(c=>c==='town') && firstRow.some(c=>c==='sku code' || c==='item_id' || c==='item id');
 
-    const townCols = {};
-    for(let c=townStartCol; c<headerRow.length; c++){
-      const t = tvaFindTownFromHeader(headerRow[c]);
-      if(t) townCols[c] = t;
-    }
-    const rows = [];
-    for(let r=headerRowIdx+1; r<grid.length; r++){
-      const row = grid[r]; if(!row || row[0]==null) continue;
-      let code;
-      if(col0IsPureCode){
-        code = String(row[0]).trim();
-      } else {
-        const raw = String(row[0]).trim();
-        if(!/^\d/.test(raw)) continue; // skip footer/summary rows like "Grand total for Prod"
-        code = raw.split('-')[0].trim();
+    let rows = [];
+    if(isFlatFormat){
+      const townCol = firstRow.indexOf('town');
+      const skuCol = firstRow.findIndex(c=>c==='sku code' || c==='item_id' || c==='item id');
+      // find the qty column matching the selected metric — skip any Value column,
+      // since only Qty is stored (Value is always computed from price at view time)
+      const wantOrders = metric==='orders';
+      const qtyCol = firstRow.findIndex(c=> c.includes('qty') && (wantOrders ? c.includes('order') : c.includes('sale')));
+      if(townCol<0 || skuCol<0 || qtyCol<0){
+        statusEl.innerHTML = `<div class="err">This looks like a flat export, but couldn't find a ${wantOrders?'"Net Order Qty"':'"Net Sales Qty"'} column matching the Metric selected above (found columns: ${(grid[0]||[]).join(', ')}). Check the Metric dropdown matches what you actually exported.</div>`;
+        return;
       }
-      if(!/^\d{6,}$/.test(code)) continue;
-      Object.entries(townCols).forEach(([c,town])=>{
-        const v = row[c];
-        if(v!=null && v!==0) rows.push({month, metric, town, sku_code:code, qty:Number(v)});
-      });
+      for(let r=1; r<grid.length; r++){
+        const row = grid[r]; if(!row) continue;
+        const townRaw = row[townCol];
+        const skuRaw = row[skuCol];
+        const qty = row[qtyCol];
+        if(townRaw==null || skuRaw==null || qty==null || qty===0) continue;
+        const town = tvaFindTownFromHeader(townRaw); // same alias/parsing logic as the wide format's town headers
+        if(!town) continue; // town not in your 63 — correctly excluded, not an error
+        const code = String(skuRaw).trim();
+        if(!/^\d{6,}$/.test(code)) continue;
+        rows.push({month, metric, town, sku_code:code, qty:Number(qty)});
+      }
+      if(!rows.length){
+        statusEl.innerHTML = '<div class="err">Recognized this as a flat export, but found zero usable rows — check the Town and SKU Code columns have real values, and that Month/Metric above match what you filtered to when exporting.</div>';
+        return;
+      }
+    } else {
+      // find the header row (contains at least one 'CODE-Town' style cell) and detect
+      // whether column A is a separate clean code or a combined "code-description" cell
+      let headerRowIdx = -1;
+      for(let r=0; r<Math.min(grid.length,10); r++){
+        const row = grid[r]||[];
+        if(row.some(c=> typeof c==='string' && /^\d{6,}-/.test(c))){ headerRowIdx = r; break; }
+      }
+      if(headerRowIdx<0){ statusEl.innerHTML = '<div class="err">Could not find the town header row in this file.</div>'; return; }
+      const headerRow = grid[headerRowIdx];
+      const sampleDataRow = grid[headerRowIdx+1] || [];
+      const col0IsPureCode = typeof sampleDataRow[0] === 'string' && /^\d+$/.test(sampleDataRow[0].trim());
+      const townStartCol = col0IsPureCode ? 2 : 1;
+
+      const townCols = {};
+      for(let c=townStartCol; c<headerRow.length; c++){
+        const t = tvaFindTownFromHeader(headerRow[c]);
+        if(t) townCols[c] = t;
+      }
+      for(let r=headerRowIdx+1; r<grid.length; r++){
+        const row = grid[r]; if(!row || row[0]==null) continue;
+        let code;
+        if(col0IsPureCode){
+          code = String(row[0]).trim();
+        } else {
+          const raw = String(row[0]).trim();
+          if(!/^\d/.test(raw)) continue; // skip footer/summary rows like "Grand total for Prod"
+          code = raw.split('-')[0].trim();
+        }
+        if(!/^\d{6,}$/.test(code)) continue;
+        Object.entries(townCols).forEach(([c,town])=>{
+          const v = row[c];
+          if(v!=null && v!==0) rows.push({month, metric, town, sku_code:code, qty:Number(v)});
+        });
+      }
     }
     // dedupe by conflict key (sum duplicates) to avoid a same-batch upsert error
     const dedup = {};
