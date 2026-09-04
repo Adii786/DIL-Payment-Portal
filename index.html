@@ -240,7 +240,7 @@ const USERS = {
   adnan:{password:'adnan2026', role:'admin'},
   rashid:{password:'rashid2026', role:'cs'},
   basit:{password:'basit2026', role:'TSM', name:'Abdul Basit', customTowns:['Larkana','Sukkur','Rahimyar Khan','Sadiqabad','Quetta']},
-  hashim:{password:'hashim2026', role:'RSM', name:'Hashim Ali', customTowns:['Lahore','Kasur','Pattoki','Sheikhupura','Gujranwala','Kamonki','Hafizabad','Wazirabad','Sialkot','Narowal','Faisalabad','Sahiwal','Burewala','Okara','Pak Pattan']}
+  Hashim:{password:'Hashim@143', role:'RSM', name:'Hashim Ali', customTowns:['Lahore','Kasur','Pattoki','Sheikhupura','Gujranwala','Kamonki','Hafizabad','Wazirabad','Sialkot','Narowal','Faisalabad','Sahiwal','Burewala','Okara','Pak Pattan']}
 };
 
 /* ============================= STATE ============================= */
@@ -697,7 +697,7 @@ function render(){
   if(!SUPABASE_CONFIGURED){ app.innerHTML = renderSetupBanner(); return; }
   if(!state.user){ app.innerHTML = renderLogin(); return; }
   if(state.user.role==='rsm'){ app.innerHTML = renderRsmShell(); loadRsmView(); }
-  else if(state.user.role==='tsm'){ app.innerHTML = renderTsmShell(); loadTsmView(); }
+  else if(state.user.role==='RSM'){ app.innerHTML = renderTsmShell(); loadTsmView(); }
   else { app.innerHTML = renderNsmShell(); loadNsmView(); }
 }
 
