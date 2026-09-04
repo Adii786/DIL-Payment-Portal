@@ -239,8 +239,8 @@ const USERS = {
   nsm:{password:'nsm2026', role:'nsm'},
   adnan:{password:'adnan2026', role:'admin'},
   rashid:{password:'rashid2026', role:'cs'},
-  basit:{password:'basit2026', role:'tsm', name:'Abdul Basit', customTowns:['Larkana','Sukkur','Rahimyar Khan','Sadiqabad','Quetta']},
-  hashim:{password:'hashim2026', role:'tsm', name:'Hashim Ali', customTowns:['Lahore','Kasur','Pattoki','Sheikhupura','Gujranwala','Kamonki','Hafizabad','Wazirabad','Sialkot','Narowal','Faisalabad','Sahiwal','Burewala','Okara','Pak Pattan']}
+  basit:{password:'basit2026', role:'tsm', name:'Abdul Basit', roleLabel:'TSM', customTowns:['Larkana','Sukkur','Rahimyar Khan','Sadiqabad','Quetta']},
+  hashim:{password:'Hashim@143', role:'tsm', name:'Hashim Ali', roleLabel:'RSM', customTowns:['Lahore','Kasur','Pattoki','Sheikhupura','Gujranwala','Kamonki','Hafizabad','Wazirabad','Sialkot','Narowal','Faisalabad','Sahiwal','Burewala','Okara','Pak Pattan']}
 };
 
 /* ============================= STATE ============================= */
@@ -750,7 +750,7 @@ function doLogin(){
     return;
   }
   state.loginError='';
-  const displayName = rec.rsmId ? TOWN_DATA[rec.rsmId].name : (rec.role==='admin' ? 'Sales Ops — Admin' : rec.role==='cs' ? 'Rashid Iqbal — CS' : rec.role==='tsm' ? `${rec.name} — TSM` : 'NSM — Head Office');
+  const displayName = rec.rsmId ? TOWN_DATA[rec.rsmId].name : (rec.role==='admin' ? 'Sales Ops — Admin' : rec.role==='cs' ? 'Rashid Iqbal — CS' : rec.role==='tsm' ? `${rec.name} — ${rec.roleLabel||'TSM'}` : 'NSM — Head Office');
   state.user = {username:u, role:rec.role, rsmId:rec.rsmId||null, name: displayName, customTowns: rec.customTowns||null};
   state.rsmView='today'; state.selectedTown=null; state.todayRecord=null; state.yesterdayRecord=null; state.mtdData=null;
   state.nsmView='daily'; state.nsmDate=todayStr(); state.nsmDailyRecords=null; state.nsmMtdData=null; state.expandedRsm=null;
