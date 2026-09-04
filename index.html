@@ -248,7 +248,7 @@ let state = {
   user:null,
   loginError:'',
   rsmView:'today',       // today | yesterday | mtd
-  tsmView:'daily', tsmDailyData:null, tsmMtdData:null, tsmMtdMode:'mtd',
+  tsmView:'daily', tsmDailyData:null, tsmMtdData:null, tsmMtdMode:'mtd', tsmOverdueMap:null, tsmSelectedTown:null,
   selectedTown:null,
   todayRecord:null,
   yesterdayRecord:null,
@@ -1364,6 +1364,11 @@ async function loadTsmView(){
   const body = document.getElementById('nsmBody');
   const towns = state.user.customTowns||[];
   try{
+    if(!state.tsmOverdueMap){
+      const full = await fetchOverdueMap(null); // all towns, filtered client-side below
+      const scoped = {}; towns.forEach(t=>{ if(full[t]) scoped[t]=full[t]; });
+      state.tsmOverdueMap = scoped;
+    }
     if(state.tsmView==='mtd'){
       if(!state.tsmMtdMode) state.tsmMtdMode = 'mtd';
       if(!state.tsmMtdData){
@@ -1377,11 +1382,16 @@ async function loadTsmView(){
       body.innerHTML = renderTsmMtd();
     } else if(state.tsmView==='achievement'){
       if(!state.tvaQuarter) state.tvaQuarter = TVA_QUARTER_OPTIONS[0];
-      if(!state.tvaRows){
-        body.innerHTML = '<div class="loading">Loading…</div>';
-        state.tvaRows = await computeRollupCombined(state.tvaQuarter, towns);
+      if(state.tsmSelectedTown){
+        if(!state.tvaRows) state.tvaRows = await computeRollup(state.tvaQuarter, state.tsmSelectedTown);
+        body.innerHTML = await renderTvaScreen({title: state.tsmSelectedTown, rows: state.tvaRows, onBack:'tsmBackToCombined()', townsBelow:null, downloadName: state.tsmSelectedTown});
+      } else {
+        if(!state.tvaRows){
+          body.innerHTML = '<div class="loading">Loading…</div>';
+          state.tvaRows = await computeRollupCombined(state.tvaQuarter, towns);
+        }
+        body.innerHTML = await renderTvaScreen({title: state.user.name, rows: state.tvaRows, onBack:null, townsBelow: towns, downloadName: state.user.name.replace(/\s+—.*/,'')});
       }
-      body.innerHTML = await renderTvaScreen({title: state.user.name, rows: state.tvaRows, onBack:null, townsBelow:null, downloadName: state.user.name.replace(/\s+—.*/,'')});
     } else {
       if(!state.tsmDailyData){
         const rsmIds = tsmScopedRsmIds();
@@ -1394,9 +1404,12 @@ async function loadTsmView(){
     body.innerHTML = `<div class="err">Could not load: ${esc(e.message||String(e))}. <button class="link-btn" onclick="state.tsmDailyData=null;state.tsmMtdData=null;state.tvaRows=null;render();">Retry</button></div>`;
   }
 }
+function tsmSelectTown(t){ state.tsmSelectedTown=t; state.tvaRows=null; render(); }
+function tsmBackToCombined(){ state.tsmSelectedTown=null; state.tvaRows=null; render(); }
 function renderTsmDaily(){
   const towns = state.user.customTowns||[];
   const records = state.tsmDailyData||[];
+  const overdueMap = state.tsmOverdueMap||{};
   let totPlan=0, totRecv=0;
   const rows = towns.map(t=>{
     let plan=0, received=0, entries=[];
@@ -1404,6 +1417,9 @@ function renderTsmDaily(){
     totPlan+=plan; totRecv+=received;
     return {town:t, plan, received, variance:received-plan, reported: plan>0||entries.length>0};
   });
+  const aging = agingTotals(overdueMap);
+  const overdueAsOf = Object.values(overdueMap)[0] ? Object.values(overdueMap)[0].asOf : null;
+  const sortedTowns = [...towns].sort((a,b)=>((overdueMap[b]?.amount||0)-(overdueMap[a]?.amount||0)));
   return `
   <div class="cards-row">
     <div class="stat-card"><div class="stat-label">Today's Plan</div><div class="stat-value">${fmt(totPlan)}</div></div>
@@ -1412,17 +1428,52 @@ function renderTsmDaily(){
     <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${achievementPct(totPlan,totRecv).toFixed(0)}%</div></div>
   </div>
   <div class="panel">
-    <h3>Town-wise — Today</h3>
+    <h3>Aging Summary <span class="cnt">${overdueAsOf?'as of '+prettyDate(overdueAsOf):'not uploaded yet'}</span></h3>
+    <div class="cards-row">
+      <div class="stat-card"><div class="stat-label">Due in 2 Days</div><div class="stat-value">${fmt(aging.due2)}</div></div>
+      <div class="stat-card"><div class="stat-label">Due in 5 Days</div><div class="stat-value">${fmt(aging.due5)}</div></div>
+      <div class="stat-card"><div class="stat-label">Due in 10 Days</div><div class="stat-value">${fmt(aging.due10)}</div></div>
+      <div class="stat-card" style="border-color:${aging.overdue>0?'#EFC9C3':'var(--line)'};">
+        <div class="stat-label">Total Overdue</div>
+        <div class="stat-value ${aging.overdue>0?'neg':''}">${fmt(aging.overdue)}</div>
+      </div>
+    </div>
+  </div>
+  <div class="panel">
+    <h3>Town-wise — Today <span class="cnt">sorted by overdue</span></h3>
     <table class="responsive-table">
-      <thead><tr><th>Town</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th>Achv.</th></tr></thead>
+      <thead><tr><th>Town</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th>Achv.</th><th class="num">Overdue</th></tr></thead>
       <tbody>
-      ${rows.map(r=>{ const pct=achievementPct(r.plan,r.received); return `<tr>
-        <td data-label="Town"><b>${esc(r.town)}</b></td>
+      ${sortedTowns.map(t=>{
+        const r = rows.find(x=>x.town===t);
+        const pct=achievementPct(r.plan,r.received);
+        const od = overdueMap[t] ? overdueMap[t].amount : 0;
+        return `<tr>
+        <td data-label="Town"><b>${esc(t)}</b></td>
         <td class="num" data-label="Plan">${fmt(r.plan)}</td>
         <td class="num" data-label="Received">${fmt(r.received)}</td>
         <td class="num ${r.variance>=0?'pos':'neg'}" data-label="Variance">${fmt(r.variance)}</td>
         <td data-label="Achv."><div class="meter"><div class="meter-fill" style="width:${Math.min(pct,100)}%;background:${meterColor(pct)}"></div></div></td>
+        <td class="num ${od>0?'neg':''}" data-label="Overdue">${fmt(od)}</td>
       </tr>`; }).join('')}
+      </tbody>
+    </table>
+  </div>
+  <div class="panel">
+    <h3>Town-wise Aging <span class="cnt">for follow-up planning</span></h3>
+    <table class="responsive-table">
+      <thead><tr><th>Town</th><th class="num">Due in 2 Days</th><th class="num">Due in 5 Days</th><th class="num">Due in 10 Days</th><th class="num">Overdue</th></tr></thead>
+      <tbody>
+      ${sortedTowns.map(t=>{
+        const a = overdueMap[t] || {due2:0,due5:0,due10:0,amount:0};
+        return `<tr>
+          <td data-label="Town">${esc(t)}</td>
+          <td class="num" data-label="Due in 2 Days">${fmt(a.due2)}</td>
+          <td class="num" data-label="Due in 5 Days">${fmt(a.due5)}</td>
+          <td class="num" data-label="Due in 10 Days">${fmt(a.due10)}</td>
+          <td class="num ${a.amount>0?'neg':''}" data-label="Overdue">${fmt(a.amount)}</td>
+        </tr>`;
+      }).join('')}
       </tbody>
     </table>
   </div>`;
@@ -1814,6 +1865,8 @@ function refreshCurrentViewData(){
   if(!state.user) return;
   if(state.user.role==='rsm'){
     state.todayRecord=null; state.yesterdayRecord=null; state.mtdData=null; state.ytdData=null; state.overdueMap=null;
+  } else if(state.user.role==='tsm'){
+    state.tsmDailyData=null; state.tsmMtdData=null; state.tsmOverdueMap=null; state.tvaRows=null;
   } else {
     state.nsmDailyRecords=null; state.nsmMtdData=null; state.nsmYtdData=null; state.nsmOverdueMap=null; state.overdueForDate=null;
   }
@@ -2056,7 +2109,7 @@ function renderTvaQuarterSelector(){
 }
 function tvaChangeQuarter(q){ state.tvaQuarter=q; state.tvaRows=null; state.tvaNationalRows=null; render(); }
 function tvaChangeMode(m){ state.tvaMode=m; render(); }
-function tvaSelectTown(t){ state.tvaSelectedTown=t; state.tvaRows=null; render(); }
+function tvaSelectTown(t){ state.tvaSelectedTown=t; state.tsmSelectedTown=t; state.tvaRows=null; render(); }
 function tvaBackToGrid(){ state.tvaSelectedTown=null; state.tvaRows=null; render(); }
 
 /* Converts a raw pcs quantity into a category's display unit — pcs (as-is),
