@@ -238,7 +238,9 @@ const USERS = {
   arif:{password:'arif2026', role:'rsm', rsmId:'arif'},
   nsm:{password:'nsm2026', role:'nsm'},
   adnan:{password:'adnan2026', role:'admin'},
-  rashid:{password:'rashid2026', role:'cs'}
+  rashid:{password:'rashid2026', role:'cs'},
+  basit:{password:'basit2026', role:'tsm', name:'Abdul Basit', customTowns:['Larkana','Sukkur','Rahimyar Khan','Sadiqabad','Quetta']},
+  hashim:{password:'hashim2026', role:'tsm', name:'Hashim Ali', customTowns:['Lahore','Kasur','Pattoki','Sheikhupura','Gujranwala','Kamonki','Hafizabad','Wazirabad','Sialkot','Narowal','Faisalabad','Sahiwal','Burewala','Okara','Pak Pattan']}
 };
 
 /* ============================= STATE ============================= */
@@ -246,6 +248,7 @@ let state = {
   user:null,
   loginError:'',
   rsmView:'today',       // today | yesterday | mtd
+  tsmView:'daily', tsmDailyData:null, tsmMtdData:null, tsmMtdMode:'mtd',
   selectedTown:null,
   todayRecord:null,
   yesterdayRecord:null,
@@ -694,6 +697,7 @@ function render(){
   if(!SUPABASE_CONFIGURED){ app.innerHTML = renderSetupBanner(); return; }
   if(!state.user){ app.innerHTML = renderLogin(); return; }
   if(state.user.role==='rsm'){ app.innerHTML = renderRsmShell(); loadRsmView(); }
+  else if(state.user.role==='tsm'){ app.innerHTML = renderTsmShell(); loadTsmView(); }
   else { app.innerHTML = renderNsmShell(); loadNsmView(); }
 }
 
@@ -746,8 +750,8 @@ function doLogin(){
     return;
   }
   state.loginError='';
-  const displayName = rec.rsmId ? TOWN_DATA[rec.rsmId].name : (rec.role==='admin' ? 'Sales Ops — Admin' : rec.role==='cs' ? 'Rashid Iqbal — CS' : 'NSM — Head Office');
-  state.user = {username:u, role:rec.role, rsmId:rec.rsmId||null, name: displayName};
+  const displayName = rec.rsmId ? TOWN_DATA[rec.rsmId].name : (rec.role==='admin' ? 'Sales Ops — Admin' : rec.role==='cs' ? 'Rashid Iqbal — CS' : rec.role==='tsm' ? `${rec.name} — TSM` : 'NSM — Head Office');
+  state.user = {username:u, role:rec.role, rsmId:rec.rsmId||null, name: displayName, customTowns: rec.customTowns||null};
   state.rsmView='today'; state.selectedTown=null; state.todayRecord=null; state.yesterdayRecord=null; state.mtdData=null;
   state.nsmView='daily'; state.nsmDate=todayStr(); state.nsmDailyRecords=null; state.nsmMtdData=null; state.expandedRsm=null;
   state.overdueMap=null; state.nsmOverdueMap=null; state.overdueUploadResult=null; state.overdueUploadDate=null; state.overdueForDate=null;
@@ -1320,6 +1324,148 @@ function renderRsmMtd(){
 }
 
 /* ============================= NSM SHELL ============================= */
+/* ============================= TSM SHELL (view-only, custom town subset) ============================= */
+function tsmScopedRsmIds(){
+  const ids = new Set();
+  (state.user.customTowns||[]).forEach(t=>{ const hit = TOWN_TO_RSM[t.toLowerCase()]; if(hit) ids.add(hit.rsmId); });
+  return [...ids];
+}
+function renderTsmShell(){
+  const towns = state.user.customTowns||[];
+  return `
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark"><img src="dil_logo.png" alt="DOLLAR"></div>
+      <div class="brand-text"><div class="t1">${esc(state.user.name)}</div><div class="t2">View only · ${towns.length} town${towns.length===1?'':'s'}</div></div>
+    </div>
+    <div class="top-right">
+      <div class="today-pill">${prettyDate(todayStr())}</div>
+      <button class="logout" onclick="doLogout()">Log out</button>
+    </div>
+  </div>
+  <div class="container">
+    <div class="tabs desktop-tabs">
+      <button class="tab ${state.tsmView==='daily'?'active':''}" onclick="setTsmView('daily')">Daily Dashboard</button>
+      <button class="tab ${state.tsmView==='mtd'?'active':''}" onclick="setTsmView('mtd')">MTD Dashboard</button>
+      <button class="tab ${state.tsmView==='achievement'?'active':''}" onclick="setTsmView('achievement')">Target vs Achievement</button>
+    </div>
+    <div id="nsmBody"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="bottom-nav">
+    <div class="bottom-nav-row">
+      <button class="bottom-nav-item ${state.tsmView==='daily'?'active':''}" onclick="setTsmView('daily')"><span class="ic">●</span>Daily</button>
+      <button class="bottom-nav-item ${state.tsmView==='mtd'?'active':''}" onclick="setTsmView('mtd')"><span class="ic">▤</span>MTD</button>
+      <button class="bottom-nav-item ${state.tsmView==='achievement'?'active':''}" onclick="setTsmView('achievement')"><span class="ic">◈</span>T v A</button>
+    </div>
+  </div>`;
+}
+function setTsmView(v){ state.tsmView=v; state.tsmDailyData=null; state.tsmMtdData=null; state.tvaRows=null; render(); }
+async function loadTsmView(){
+  const body = document.getElementById('nsmBody');
+  const towns = state.user.customTowns||[];
+  try{
+    if(state.tsmView==='mtd'){
+      if(!state.tsmMtdMode) state.tsmMtdMode = 'mtd';
+      if(!state.tsmMtdData){
+        const dateFrom = state.tsmMtdMode==='ytd' ? fiscalYearStart(todayStr()) : firstOfMonth(todayStr());
+        const rsmIds = tsmScopedRsmIds();
+        const results = await Promise.all(rsmIds.map(id=>buildRsmDateRange(id, dateFrom, todayStr())));
+        const agg = {}; results.forEach(r=>Object.assign(agg, r.agg));
+        const daysElapsed = results.length ? results[0].daysElapsed : 0;
+        state.tsmMtdData = {agg, daysElapsed, dateFrom};
+      }
+      body.innerHTML = renderTsmMtd();
+    } else if(state.tsmView==='achievement'){
+      if(!state.tvaQuarter) state.tvaQuarter = TVA_QUARTER_OPTIONS[0];
+      if(!state.tvaRows){
+        body.innerHTML = '<div class="loading">Loading…</div>';
+        state.tvaRows = await computeRollupCombined(state.tvaQuarter, towns);
+      }
+      body.innerHTML = await renderTvaScreen({title: state.user.name, rows: state.tvaRows, onBack:null, townsBelow:null, downloadName: state.user.name.replace(/\s+—.*/,'')});
+    } else {
+      if(!state.tsmDailyData){
+        const rsmIds = tsmScopedRsmIds();
+        const records = await Promise.all(rsmIds.map(id=>getRecord(id, todayStr())));
+        state.tsmDailyData = records;
+      }
+      body.innerHTML = renderTsmDaily();
+    }
+  }catch(e){
+    body.innerHTML = `<div class="err">Could not load: ${esc(e.message||String(e))}. <button class="link-btn" onclick="state.tsmDailyData=null;state.tsmMtdData=null;state.tvaRows=null;render();">Retry</button></div>`;
+  }
+}
+function renderTsmDaily(){
+  const towns = state.user.customTowns||[];
+  const records = state.tsmDailyData||[];
+  let totPlan=0, totRecv=0;
+  const rows = towns.map(t=>{
+    let plan=0, received=0, entries=[];
+    records.forEach(rec=>{ const tt = townTotals(rec, t); plan+=tt.plan; received+=tt.received; entries=entries.concat(tt.entries||[]); });
+    totPlan+=plan; totRecv+=received;
+    return {town:t, plan, received, variance:received-plan, reported: plan>0||entries.length>0};
+  });
+  return `
+  <div class="cards-row">
+    <div class="stat-card"><div class="stat-label">Today's Plan</div><div class="stat-value">${fmt(totPlan)}</div></div>
+    <div class="stat-card"><div class="stat-label">Received</div><div class="stat-value">${fmt(totRecv)}</div></div>
+    <div class="stat-card"><div class="stat-label">Variance</div><div class="stat-value ${totRecv-totPlan>=0?'pos':'neg'}">${fmt(totRecv-totPlan)}</div></div>
+    <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${achievementPct(totPlan,totRecv).toFixed(0)}%</div></div>
+  </div>
+  <div class="panel">
+    <h3>Town-wise — Today</h3>
+    <table class="responsive-table">
+      <thead><tr><th>Town</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th>Achv.</th></tr></thead>
+      <tbody>
+      ${rows.map(r=>{ const pct=achievementPct(r.plan,r.received); return `<tr>
+        <td data-label="Town"><b>${esc(r.town)}</b></td>
+        <td class="num" data-label="Plan">${fmt(r.plan)}</td>
+        <td class="num" data-label="Received">${fmt(r.received)}</td>
+        <td class="num ${r.variance>=0?'pos':'neg'}" data-label="Variance">${fmt(r.variance)}</td>
+        <td data-label="Achv."><div class="meter"><div class="meter-fill" style="width:${Math.min(pct,100)}%;background:${meterColor(pct)}"></div></div></td>
+      </tr>`; }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+function renderTsmMtd(){
+  const towns = state.user.customTowns||[];
+  const {agg, daysElapsed} = state.tsmMtdData || {agg:{}, daysElapsed:0};
+  const isYtd = state.tsmMtdMode==='ytd';
+  let totPlan=0, totRecv=0;
+  towns.forEach(t=>{ const a=agg[t]||{plan:0,received:0}; totPlan+=a.plan; totRecv+=a.received; });
+  return `
+  <div class="row-flex" style="margin-bottom:14px;">
+    <div class="field" style="max-width:180px;">
+      <label>Period</label>
+      <select onchange="state.tsmMtdMode=this.value;state.tsmMtdData=null;render();">
+        <option value="mtd" ${!isYtd?'selected':''}>Month to Date</option>
+        <option value="ytd" ${isYtd?'selected':''}>Year to Date</option>
+      </select>
+    </div>
+  </div>
+  <div class="cards-row">
+    <div class="stat-card"><div class="stat-label">${isYtd?'YTD':'MTD'} Plan</div><div class="stat-value">${fmt(totPlan)}</div><div class="stat-sub">${daysElapsed} days elapsed</div></div>
+    <div class="stat-card"><div class="stat-label">Received</div><div class="stat-value">${fmt(totRecv)}</div></div>
+    <div class="stat-card"><div class="stat-label">Variance</div><div class="stat-value ${totRecv-totPlan>=0?'pos':'neg'}">${fmt(totRecv-totPlan)}</div></div>
+    <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${achievementPct(totPlan,totRecv).toFixed(0)}%</div></div>
+  </div>
+  <div class="panel">
+    <h3>Town-wise ${isYtd?'YTD':'MTD'}</h3>
+    <table class="responsive-table">
+      <thead><tr><th>Town</th><th class="num">Plan</th><th class="num">Received</th><th class="num">Variance</th><th>Achv.</th></tr></thead>
+      <tbody>
+      ${towns.map(t=>{ const a=agg[t]||{plan:0,received:0}; const pct=achievementPct(a.plan,a.received); return `<tr>
+        <td data-label="Town"><b>${esc(t)}</b></td>
+        <td class="num" data-label="Plan">${fmt(a.plan)}</td>
+        <td class="num" data-label="Received">${fmt(a.received)}</td>
+        <td class="num ${a.received-a.plan>=0?'pos':'neg'}" data-label="Variance">${fmt(a.received-a.plan)}</td>
+        <td data-label="Achv."><div class="meter"><div class="meter-fill" style="width:${Math.min(pct,100)}%;background:${meterColor(pct)}"></div></div></td>
+      </tr>`; }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
 function renderNsmShell(){
   const role = state.user.role;
   const isAdmin = role==='admin';
