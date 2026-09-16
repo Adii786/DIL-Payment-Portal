@@ -218,7 +218,7 @@ const sb = SUPABASE_CONFIGURED ? supabase.createClient(SUPABASE_URL, SUPABASE_AN
 
 /* ============================= DATA MODEL ============================= */
 const TOWN_DATA = {
-  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad','Khanpur','Turbat'] },
+  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad','Khanpur','Khairpurmirs','Turbat'] },
   jamal:   { name:'Jamal e Rabbi',   towns:['Multan','Dera Ghazi Khan','Muzaffargarh','Bahawalnagar','Chishtian','Bahawalpur','Ahmedpur East','Mian Channu','Vehari','Karachi'] },
   danish:  { name:'Danish Imran',    towns:['Lahore','Gujranwala','Kasur','Sheikhupura','Pattoki','Kamonki'] },
   qaiser:  { name:'Qaiser Raza Baig',towns:['Faisalabad','Sahiwal','Okara','Pak Pattan','Burewala'] },
@@ -2592,7 +2592,7 @@ async function handleSaveFamilyMeta(family, category, subtotalUom, convFactor, p
 /* ---- Target Upload: matches the Annual Target Allocation format (sheet per town) ---- */
 const TVA_SHEET_TOWN = {
  KHI:'Karachi',HYD:'Hyderabad',MPK:'Mirpurkhas',NWS:'Nawabshah',SUK:'Sukkur',LRK:'Larkana',
- QTA:'Quetta',RYK:'Rahimyar Khan',KNP:'Khanpur',SDQ:'Sadiqabad',TRB:'Turbat',
+ QTA:'Quetta',RYK:'Rahimyar Khan',KNP:'Khanpur',SDQ:'Sadiqabad',TRB:'Turbat',KHR:'Khairpurmirs',
  BHW:'Bahawalpur',APE:'Ahmed pur East',MUL:'Multan',DGK:'Dera Ghazi Khan',MZH:'Muzaffargarh',
  BWN:'Bhawalnagar',CHS:'Chishtian',MNC:'Mian Chunnu',VHR:'Vihari',
  FSD:'Faisalabad',OKR:'Okara',SHW:'Sahiwal',PPS:'Pak Patan Shrif',BRW:'Burewala',
