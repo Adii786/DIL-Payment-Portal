@@ -742,6 +742,19 @@ function renderLogin(){
     </div>
   </div>`;
 }
+function resetAllViewState(){
+  Object.assign(state, {
+    todayRecord:null, yesterdayRecord:null, mtdData:null, ytdData:null, overdueMap:null,
+    nsmDailyRecords:null, nsmMtdData:null, nsmYtdData:null, nsmOverdueMap:null, overdueForDate:null,
+    tsmDailyData:null, tsmMtdData:null, tsmOverdueMap:null, tsmSelectedTown:null,
+    tvaRows:null, tvaSelectedTown:null,
+    investmentData:null, btsData:null, invReqList:null,
+    customerTownMapList:null, overdueUploadResult:null, overdueUploadDate:null,
+    rsmView:'today', rsmMtdMode:'mtd', nsmView:'daily', tsmView:'daily', tsmMtdMode:'mtd',
+    nsmDate:todayStr(), expandedRsm:null, selectedTown:null,
+    adminUploadSubTab:null, tvaUploadSubTab:'hierarchy', nsmUploadSubTab:null,
+  });
+}
 function doLogin(){
   const u = document.getElementById('loginUser').value.trim().toLowerCase();
   const p = document.getElementById('loginPass').value;
@@ -753,10 +766,8 @@ function doLogin(){
   }
   state.loginError='';
   const displayName = rec.rsmId ? TOWN_DATA[rec.rsmId].name : (rec.role==='admin' ? 'Sales Ops — Admin' : rec.role==='cs' ? 'Rashid Iqbal — CS' : rec.role==='tsm' ? `${rec.name} — ${rec.roleLabel||'TSM'}` : 'NSM — Head Office');
+  resetAllViewState();
   state.user = {username:u, role:rec.role, rsmId:rec.rsmId||null, name: displayName, customTowns: rec.customTowns||null};
-  state.rsmView='today'; state.selectedTown=null; state.todayRecord=null; state.yesterdayRecord=null; state.mtdData=null;
-  state.nsmView='daily'; state.nsmDate=todayStr(); state.nsmDailyRecords=null; state.nsmMtdData=null; state.expandedRsm=null;
-  state.overdueMap=null; state.nsmOverdueMap=null; state.overdueUploadResult=null; state.overdueUploadDate=null; state.overdueForDate=null;
   render();
 }
 function doLogout(){
@@ -764,6 +775,11 @@ function doLogout(){
   try{ localStorage.removeItem(SESSION_KEY); }catch(e){}
   stopNsmPolling();
   stopRsmPolling();
+  // Clear every cached data field and reset which tab was active, so a
+  // different account logging in next, in the same browser tab with no
+  // full page reload, never sees stale data or a stale tab selection
+  // scoped to the previous login.
+  resetAllViewState();
   render();
 }
 
@@ -3039,6 +3055,9 @@ function renderInvestmentTracker(title, towns){
   return `
   <div class="panel">
     <h3>Distributor Past Dues, Stock &amp; Receivable Details <span class="cnt">${title} · Stock/Credit as of ${asOf?prettyDate(asOf):'not uploaded yet'} · ${receivableNote}</span></h3>
+    <div class="row-flex" style="margin-bottom:10px;">
+      <button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="downloadInvestmentTrackerCsv('${escJs(title)}')">⬇ Download CSV</button>
+    </div>
     <div class="cards-row">
       <div class="stat-card"><div class="stat-label">Investment Required</div><div class="stat-value">${fmt(totReq)}</div></div>
       <div class="stat-card"><div class="stat-label">Net Investment</div><div class="stat-value">${fmt(totNet)}</div></div>
@@ -3076,6 +3095,20 @@ function renderInvestmentTracker(title, towns){
       </tr></tfoot>
     </table>
   </div>`;
+}
+function downloadInvestmentTrackerCsv(title){
+  const {rows} = state.investmentData || {rows:[]};
+  if(!rows.length) return;
+  let csv = 'Town,Investment Required,Total Receivable at DIL,Current Distributor Stock,Stock In-Transit,Total Stock,Total Market Credit,Distributor Net Investment,Variance,Variance %\n';
+  rows.forEach(r=>{
+    csv += `"${r.town}",${r.required.toFixed(2)},${r.receivableAtDil.toFixed(2)},${r.currentStock.toFixed(2)},${r.inTransit.toFixed(2)},${r.totalStock.toFixed(2)},${r.marketCredit.toFixed(2)},${r.netInvestment.toFixed(2)},${r.variance.toFixed(2)},${r.varPct!=null?r.varPct.toFixed(1):''}\n`;
+  });
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `${title.replace(/\s+/g,'_')}_investment_tracker_${todayStr()}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
 }
 
 /* ---- Admin: Investment Required — direct input + bulk upload ---- */
@@ -3349,6 +3382,9 @@ function renderBalanceToShip(title){
   return `
   <div class="panel">
     <h3>Balance to Ship <span class="cnt">${title} · as of ${asOf?prettyDate(asOf):'not uploaded yet'}</span></h3>
+    <div class="row-flex" style="margin-bottom:10px;">
+      <button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="downloadBalanceToShipCsv('${escJs(title)}')">⬇ Download CSV</button>
+    </div>
     <div class="cards-row">
       <div class="stat-card"><div class="stat-label">Net Order Qty</div><div class="stat-value">${tvaFmtQty(totOrderQty)}</div></div>
       <div class="stat-card"><div class="stat-label">Net Sales Qty</div><div class="stat-value">${tvaFmtQty(totSalesQty)}</div></div>
@@ -3387,6 +3423,21 @@ function renderBalanceToShip(title){
       </tbody>
     </table>
   </div>`;
+}
+function downloadBalanceToShipCsv(title){
+  const {rows} = state.btsData || {rows:[]};
+  if(!rows.length) return;
+  const sorted = [...rows].sort((a,b)=>a.family.localeCompare(b.family));
+  let csv = 'Category,Product,Order Qty,Order Value,Sales Qty,Sales Value,Balance Qty,Balance Value\n';
+  sorted.forEach(r=>{
+    csv += `"${r.category}","${r.family}",${r.orderQty.toFixed(2)},${r.orderValue.toFixed(2)},${r.salesQty.toFixed(2)},${r.salesValue.toFixed(2)},${r.balanceQty.toFixed(2)},${r.balanceValue.toFixed(2)}\n`;
+  });
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `${title.replace(/\s+/g,'_')}_balance_to_ship_${todayStr()}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
 }
 async function loadBalanceToShipUploadView(){
   const body = document.getElementById('nsmBody');
