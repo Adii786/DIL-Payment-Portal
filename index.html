@@ -686,14 +686,19 @@ function meterColor(pct){
   return '#D7DBE4';
 }
 /* ============================= RENDER ROOT ============================= */
+let renderGen = 0; // incremented on every navigation; lets a late-arriving
+// async fetch from a previous click detect it's stale and skip writing to
+// the DOM, so a slow tab's data can never silently overwrite a faster one
+// you've since navigated away from.
 function render(){
   saveSession();
   const app = document.getElementById('app');
   if(!SUPABASE_CONFIGURED){ app.innerHTML = renderSetupBanner(); return; }
   if(!state.user){ app.innerHTML = renderLogin(); return; }
-  if(state.user.role==='rsm'){ app.innerHTML = renderRsmShell(); loadRsmView(); }
-  else if(state.user.role==='tsm'){ app.innerHTML = renderTsmShell(); loadTsmView(); }
-  else { app.innerHTML = renderNsmShell(); loadNsmView(); }
+  const gen = ++renderGen;
+  if(state.user.role==='rsm'){ app.innerHTML = renderRsmShell(); loadRsmView(gen); }
+  else if(state.user.role==='tsm'){ app.innerHTML = renderTsmShell(); loadTsmView(gen); }
+  else { app.innerHTML = renderNsmShell(); loadNsmView(gen); }
 }
 
 function renderSetupBanner(){
@@ -815,22 +820,22 @@ function renderRsmShell(){
 }
 function setRsmView(v){ state.rsmView=v; state.selectedTown=null; render(); }
 
-async function loadRsmView(){
+async function loadRsmView(gen){
   ensureRsmPolling();
   const rsmId = state.user.rsmId;
   const body = document.getElementById('rsmBody');
   if(state.rsmView==='today'){
     if(!state.todayRecord) state.todayRecord = await getRecord(rsmId, todayStr());
     if(!state.overdueMap) state.overdueMap = await fetchOverdueMap(rsmId);
-    body.innerHTML = renderRsmToday();
+    if(gen===renderGen) body.innerHTML = renderRsmToday();
   } else if(state.rsmView==='yesterday'){
     if(!state.yesterdayRecord) state.yesterdayRecord = await getRecord(rsmId, todayStr(-1));
-    body.innerHTML = renderRsmReadonly(state.yesterdayRecord, 'Yesterday · '+prettyDate(todayStr(-1)));
+    if(gen===renderGen) body.innerHTML = renderRsmReadonly(state.yesterdayRecord, 'Yesterday · '+prettyDate(todayStr(-1)));
   } else if(state.rsmView==='achievement'){
-    await loadRsmAchievementView();
+    await loadRsmAchievementView(gen);
   } else if(state.rsmView==='investment'){
     if(!state.investmentData) state.investmentData = await computeInvestmentTrackerRows(TOWN_DATA[rsmId].towns);
-    body.innerHTML = renderInvestmentTracker(TOWN_DATA[rsmId].name, TOWN_DATA[rsmId].towns);
+    if(gen===renderGen) body.innerHTML = renderInvestmentTracker(TOWN_DATA[rsmId].name, TOWN_DATA[rsmId].towns);
   } else if(state.rsmView==='mtd'){
     if(!state.rsmMtdMode) state.rsmMtdMode = 'mtd';
     if(state.rsmMtdMode==='ytd'){
@@ -838,7 +843,7 @@ async function loadRsmView(){
     } else {
       if(!state.mtdData) state.mtdData = await buildRsmMtd(rsmId);
     }
-    body.innerHTML = renderRsmMtd();
+    if(gen===renderGen) body.innerHTML = renderRsmMtd();
   }
 }
 
@@ -859,6 +864,7 @@ async function pollRsmBody(){
   if(state.rsmView!=='today' || state.selectedTown) return; // don't disturb an open entry screen
   const body = document.getElementById('rsmBody');
   if(!body) return;
+  const gen = renderGen; // capture now — if navigation happens during this fetch, skip the stale write below
   const rsmId = state.user.rsmId;
   const [rec, overdueMap] = await Promise.all([
     getRecord(rsmId, todayStr()),
@@ -866,7 +872,7 @@ async function pollRsmBody(){
   ]);
   state.todayRecord = rec;
   state.overdueMap = overdueMap;
-  body.innerHTML = renderRsmToday();
+  if(gen===renderGen && state.rsmView==='today' && !state.selectedTown) body.innerHTML = renderRsmToday();
 }
 
 function escJs(s){ return esc(s).replace(/'/g,"\\'"); }
@@ -1378,7 +1384,7 @@ function renderTsmShell(){
   </div>`;
 }
 function setTsmView(v){ state.tsmView=v; state.tsmDailyData=null; state.tsmMtdData=null; state.tvaRows=null; render(); }
-async function loadTsmView(){
+async function loadTsmView(gen){
   const body = document.getElementById('nsmBody');
   const towns = state.user.customTowns||[];
   try{
@@ -1397,32 +1403,32 @@ async function loadTsmView(){
         const daysElapsed = results.length ? results[0].daysElapsed : 0;
         state.tsmMtdData = {agg, daysElapsed, dateFrom};
       }
-      body.innerHTML = renderTsmMtd();
+      if(gen===renderGen) body.innerHTML = renderTsmMtd();
     } else if(state.tsmView==='achievement'){
       if(!state.tvaQuarter) state.tvaQuarter = TVA_QUARTER_OPTIONS[0];
       if(state.tsmSelectedTown){
         if(!state.tvaRows) state.tvaRows = await computeRollup(state.tvaQuarter, state.tsmSelectedTown);
-        body.innerHTML = await renderTvaScreen({title: state.tsmSelectedTown, rows: state.tvaRows, onBack:'tsmBackToCombined()', townsBelow:null, downloadName: state.tsmSelectedTown});
+        if(gen===renderGen) body.innerHTML = await renderTvaScreen({title: state.tsmSelectedTown, rows: state.tvaRows, onBack:'tsmBackToCombined()', townsBelow:null, downloadName: state.tsmSelectedTown});
       } else {
         if(!state.tvaRows){
-          body.innerHTML = '<div class="loading">Loading…</div>';
+          if(gen===renderGen) body.innerHTML = '<div class="loading">Loading…</div>';
           state.tvaRows = await computeRollupCombined(state.tvaQuarter, towns);
         }
-        body.innerHTML = await renderTvaScreen({title: state.user.name, rows: state.tvaRows, onBack:null, townsBelow: towns, downloadName: state.user.name.replace(/\s+—.*/,'')});
+        if(gen===renderGen) body.innerHTML = await renderTvaScreen({title: state.user.name, rows: state.tvaRows, onBack:null, townsBelow: towns, downloadName: state.user.name.replace(/\s+—.*/,'')});
       }
     } else if(state.tsmView==='investment'){
       if(!state.investmentData) state.investmentData = await computeInvestmentTrackerRows(towns);
-      body.innerHTML = renderInvestmentTracker(state.user.name, towns);
+      if(gen===renderGen) body.innerHTML = renderInvestmentTracker(state.user.name, towns);
     } else {
       if(!state.tsmDailyData){
         const rsmIds = tsmScopedRsmIds();
         const records = await Promise.all(rsmIds.map(id=>getRecord(id, todayStr())));
         state.tsmDailyData = records;
       }
-      body.innerHTML = renderTsmDaily();
+      if(gen===renderGen) body.innerHTML = renderTsmDaily();
     }
   }catch(e){
-    body.innerHTML = `<div class="err">Could not load: ${esc(e.message||String(e))}. <button class="link-btn" onclick="state.tsmDailyData=null;state.tsmMtdData=null;state.tvaRows=null;render();">Retry</button></div>`;
+    if(gen===renderGen) body.innerHTML = `<div class="err">Could not load: ${esc(e.message||String(e))}. <button class="link-btn" onclick="state.tsmDailyData=null;state.tsmMtdData=null;state.tvaRows=null;render();">Retry</button></div>`;
   }
 }
 function tsmSelectTown(t){ state.tsmSelectedTown=t; state.tvaRows=null; render(); }
@@ -1593,14 +1599,16 @@ function stopNsmPolling(){
 }
 async function pollNsmBody(){
   if(!state.user || (state.user.role!=='nsm' && state.user.role!=='admin')) return;
-  if(state.nsmView==='upload' || state.nsmView==='achievement' || state.nsmView==='tvaupload') return; // these tabs manage their own data — never let the daily/MTD poll overwrite them
+  if(state.nsmView==='upload' || state.nsmView==='achievement' || state.nsmView==='tvaupload' || state.nsmView==='investment' || state.nsmView==='invupload') return; // these tabs manage their own data — never let the daily/MTD poll overwrite them
   const body = document.getElementById('nsmBody');
   if(!body) return; // NSM screen not currently mounted
+  const gen = renderGen; // capture now — if navigation happens during this fetch, skip the stale write below
+  const startedView = state.nsmView;
   state.nsmOverdueMap = await fetchOverdueMap(null); // always pick up the latest "as of" overdue upload
-  if(state.nsmView==='daily'){
+  if(startedView==='daily'){
     state.nsmDailyRecords = await loadNsmDailyAll(state.nsmDate);
     state.nsmLastUpdated = new Date();
-    body.innerHTML = renderNsmDaily();
+    if(gen===renderGen && state.nsmView===startedView) body.innerHTML = renderNsmDaily();
   } else {
     if(state.nsmMtdMode==='ytd'){
       const r = await loadNsmYtdAll(); state.nsmYtdData = r.data;
@@ -1608,41 +1616,42 @@ async function pollNsmBody(){
       state.nsmMtdData = await loadNsmMtdAll();
     }
     state.nsmLastUpdated = new Date();
-    body.innerHTML = renderNsmMtd();
+    if(gen===renderGen && state.nsmView===startedView) body.innerHTML = renderNsmMtd();
   }
 }
 
-async function loadNsmView(){
+async function loadNsmView(gen){
   ensureNsmPolling();
   const body = document.getElementById('nsmBody');
   if(state.nsmView==='upload'){
     if(!state.overdueUploadDate) state.overdueUploadDate = todayStr();
     if(!state.overdueForDate) state.overdueForDate = await fetchOverdueForDate(state.overdueUploadDate);
     if(!state.customerTownMapList) state.customerTownMapList = await fetchCustomerTownMapList();
-    body.innerHTML = renderNsmUpload();
+    if(gen===renderGen) body.innerHTML = renderNsmUpload();
     return;
   }
   if(state.nsmView==='achievement'){
-    await loadNsmAchievementView();
+    await loadNsmAchievementView(gen);
     return;
   }
   if(state.nsmView==='tvaupload'){
-    await loadTvaUploadView();
+    await loadTvaUploadView(gen);
     return;
   }
   if(state.nsmView==='investment'){
     if(!state.investmentData) state.investmentData = await computeInvestmentTrackerRows(ALL_TOWNS_FLAT());
-    body.innerHTML = renderInvestmentTracker('All Regions', ALL_TOWNS_FLAT());
+    if(gen===renderGen) body.innerHTML = renderInvestmentTracker('All Regions', ALL_TOWNS_FLAT());
     return;
   }
   if(state.nsmView==='invupload'){
-    await loadInvestmentUploadView();
+    await loadInvestmentUploadView(gen);
     return;
   }
   if(!state.nsmOverdueMap) state.nsmOverdueMap = await fetchOverdueMap(null);
+  if(gen!==renderGen) return;
   if(state.nsmView==='daily'){
     if(!state.nsmDailyRecords){ state.nsmDailyRecords = await loadNsmDailyAll(state.nsmDate); state.nsmLastUpdated = new Date(); }
-    body.innerHTML = renderNsmDaily();
+    if(gen===renderGen) body.innerHTML = renderNsmDaily();
   } else {
     if(!state.nsmMtdMode) state.nsmMtdMode = 'mtd';
     if(state.nsmMtdMode==='ytd'){
@@ -1650,7 +1659,7 @@ async function loadNsmView(){
     } else {
       if(!state.nsmMtdData){ state.nsmMtdData = await loadNsmMtdAll(); state.nsmLastUpdated = new Date(); }
     }
-    body.innerHTML = renderNsmMtd();
+    if(gen===renderGen) body.innerHTML = renderNsmMtd();
   }
 }
 function changeNsmDate(v){ state.nsmDate=v; state.nsmDailyRecords=null; state.expandedRsm=null; render(); }
@@ -2105,23 +2114,23 @@ function buildRollupRows(hierarchy, familyMeta, targetByScope, ordersMaps, sales
   });
 }
 /* ---- RSM view: combined (all own towns) first, drill into a town from there ---- */
-async function loadRsmAchievementView(){
+async function loadRsmAchievementView(gen){
   const body = document.getElementById('rsmBody');
   if(!state.tvaQuarter) state.tvaQuarter = TVA_QUARTER_OPTIONS[0];
   const towns = TOWN_DATA[state.user.rsmId].towns;
   try{
     if(state.tvaSelectedTown){
       if(!state.tvaRows) state.tvaRows = await computeRollup(state.tvaQuarter, state.tvaSelectedTown);
-      body.innerHTML = await renderTvaScreen({title: state.tvaSelectedTown, rows: state.tvaRows, onBack:'tvaBackToGrid()', townsBelow:null, downloadName: state.tvaSelectedTown});
+      if(gen===renderGen) body.innerHTML = await renderTvaScreen({title: state.tvaSelectedTown, rows: state.tvaRows, onBack:'tvaBackToGrid()', townsBelow:null, downloadName: state.tvaSelectedTown});
     } else {
       if(!state.tvaRows){
-        body.innerHTML = '<div class="loading">Loading…</div>';
+        if(gen===renderGen) body.innerHTML = '<div class="loading">Loading…</div>';
         state.tvaRows = await computeRollupCombined(state.tvaQuarter, towns);
       }
-      body.innerHTML = await renderTvaScreen({title: `${state.user.name} — All Towns`, rows: state.tvaRows, onBack:null, townsBelow: towns, downloadName: state.user.name});
+      if(gen===renderGen) body.innerHTML = await renderTvaScreen({title: `${state.user.name} — All Towns`, rows: state.tvaRows, onBack:null, townsBelow: towns, downloadName: state.user.name});
     }
   }catch(e){
-    body.innerHTML = `<div class="err">Could not load Target vs Achievement: ${esc(e.message||String(e))}. <button class="link-btn" onclick="state.tvaRows=null;render();">Retry</button></div>`;
+    if(gen===renderGen) body.innerHTML = `<div class="err">Could not load Target vs Achievement: ${esc(e.message||String(e))}. <button class="link-btn" onclick="state.tvaRows=null;render();">Retry</button></div>`;
   }
 }
 function renderTvaQuarterSelector(){
@@ -2319,26 +2328,27 @@ function tvaDownloadCsv(name){
 }
 
 /* ---- NSM view: national -> RSM grid -> combined (RSM's towns) -> individual town ---- */
-async function loadNsmAchievementView(){
+async function loadNsmAchievementView(gen){
   const body = document.getElementById('nsmBody');
   if(!state.tvaQuarter) state.tvaQuarter = TVA_QUARTER_OPTIONS[0];
   try{
     if(state.tvaSelectedTown){
       if(!state.tvaRows) state.tvaRows = await computeRollup(state.tvaQuarter, state.tvaSelectedTown);
-      body.innerHTML = await renderTvaScreen({title: state.tvaSelectedTown, rows: state.tvaRows, onBack:'tvaBackToRsmCombined()', townsBelow:null, downloadName: state.tvaSelectedTown});
+      if(gen===renderGen) body.innerHTML = await renderTvaScreen({title: state.tvaSelectedTown, rows: state.tvaRows, onBack:'tvaBackToRsmCombined()', townsBelow:null, downloadName: state.tvaSelectedTown});
     } else if(state.tvaExpandedRsm){
       const towns = TOWN_DATA[state.tvaExpandedRsm].towns;
       if(!state.tvaRows){
-        body.innerHTML = '<div class="loading">Loading territory summary…</div>';
+        if(gen===renderGen) body.innerHTML = '<div class="loading">Loading territory summary…</div>';
         state.tvaRows = await computeRollupCombined(state.tvaQuarter, towns);
       }
-      body.innerHTML = await renderTvaScreen({title: `${TOWN_DATA[state.tvaExpandedRsm].name} — All Towns`, rows: state.tvaRows, onBack:'tvaBackToRsmList()', townsBelow: towns, downloadName: TOWN_DATA[state.tvaExpandedRsm].name});
+      if(gen===renderGen) body.innerHTML = await renderTvaScreen({title: `${TOWN_DATA[state.tvaExpandedRsm].name} — All Towns`, rows: state.tvaRows, onBack:'tvaBackToRsmList()', townsBelow: towns, downloadName: TOWN_DATA[state.tvaExpandedRsm].name});
     } else {
       if(!state.tvaNationalRows){
-        body.innerHTML = '<div class="loading">Loading national summary…</div>';
+        if(gen===renderGen) body.innerHTML = '<div class="loading">Loading national summary…</div>';
         const allTowns = ALL_TOWNS_FLAT();
         state.tvaNationalRows = await computeRollupCombined(state.tvaQuarter, allTowns);
       }
+      if(gen!==renderGen) return;
       const nationalScreen = await renderTvaScreen({title:'All Regions', rows: state.tvaNationalRows, onBack:null, townsBelow:null, downloadName:'All_Regions'});
       state.tvaRows = state.tvaNationalRows; // so CSV export button on national screen works too
       const rsmGrid = `<div class="panel">
@@ -2350,10 +2360,10 @@ async function loadNsmAchievementView(){
           </button>`).join('')}
         </div>
       </div>`;
-      body.innerHTML = nationalScreen + rsmGrid;
+      if(gen===renderGen) body.innerHTML = nationalScreen + rsmGrid;
     }
   }catch(e){
-    body.innerHTML = `<div class="err">Could not load Target vs Achievement: ${esc(e.message||String(e))}. <button class="link-btn" onclick="state.tvaRows=null;state.tvaNationalRows=null;render();">Retry</button></div>`;
+    if(gen===renderGen) body.innerHTML = `<div class="err">Could not load Target vs Achievement: ${esc(e.message||String(e))}. <button class="link-btn" onclick="state.tvaRows=null;state.tvaNationalRows=null;render();">Retry</button></div>`;
   }
 }
 function tvaDrillRsm(id){ state.tvaExpandedRsm=id; state.tvaRows=null; render(); }
@@ -2362,7 +2372,7 @@ function tvaBackToRsmCombined(){ state.tvaSelectedTown=null; state.tvaRows=null;
 function ALL_TOWNS_FLAT(){ return RSM_IDS.flatMap(id=>TOWN_DATA[id].towns); }
 /* ============================= ADMIN: T v A UPLOAD ============================= */
 function setTvaUploadSubTab(t){ state.tvaUploadSubTab=t; state.tvaUploadResult=null; render(); }
-async function loadTvaUploadView(){
+async function loadTvaUploadView(gen){
   const body = document.getElementById('nsmBody');
   if(state.tvaUploadSubTab==='mapping'){
     // Always fetch fresh here — this view exists specifically so corrections
@@ -2374,7 +2384,7 @@ async function loadTvaUploadView(){
     if(!state.tvaHierarchyList) state.tvaHierarchyList = await fetchHierarchyList();
     if(!state.tvaFamilyMetaList) state.tvaFamilyMetaList = await fetchFamilyMetaList();
   }
-  body.innerHTML = renderTvaUploadPanel();
+  if(gen===renderGen) body.innerHTML = renderTvaUploadPanel();
 }
 async function fetchHierarchyList(){
   if(!sb) return [];
@@ -3065,10 +3075,10 @@ function renderInvestmentTracker(title, towns){
   </div>`;
 }
 /* ---- Admin: Investment Required — direct input + bulk upload ---- */
-async function loadInvestmentUploadView(){
+async function loadInvestmentUploadView(gen){
   const body = document.getElementById('nsmBody');
   if(!state.invReqList) state.invReqList = await fetchInvestmentRequiredList();
-  body.innerHTML = renderInvestmentUploadPanel();
+  if(gen===renderGen) body.innerHTML = renderInvestmentUploadPanel();
 }
 async function fetchInvestmentRequiredList(){
   const req = await fetchInvestmentRequired();
