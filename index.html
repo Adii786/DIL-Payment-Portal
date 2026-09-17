@@ -16,6 +16,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth/mammoth.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <style>
   :root{
     --navy:#151515;
@@ -218,7 +219,7 @@ const sb = SUPABASE_CONFIGURED ? supabase.createClient(SUPABASE_URL, SUPABASE_AN
 
 /* ============================= DATA MODEL ============================= */
 const TOWN_DATA = {
-  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad','Khanpur','Khairpurmirs','Turbat'] },
+  yaqoob:  { name:'Yaqoob Magnejo',  towns:['Hyderabad','Mirpurkhas','Nawabshah','Sukkur','Larkana','Quetta','Rahimyar Khan','Sadiqabad','Khanpur','Turbat'] },
   jamal:   { name:'Jamal e Rabbi',   towns:['Multan','Dera Ghazi Khan','Muzaffargarh','Bahawalnagar','Chishtian','Bahawalpur','Ahmedpur East','Mian Channu','Vehari','Karachi'] },
   danish:  { name:'Danish Imran',    towns:['Lahore','Gujranwala','Kasur','Sheikhupura','Pattoki','Kamonki'] },
   qaiser:  { name:'Qaiser Raza Baig',towns:['Faisalabad','Sahiwal','Okara','Pak Pattan','Burewala'] },
@@ -249,6 +250,7 @@ let state = {
   loginError:'',
   rsmView:'today',       // today | yesterday | mtd
   tsmView:'daily', tsmDailyData:null, tsmMtdData:null, tsmMtdMode:'mtd', tsmOverdueMap:null, tsmSelectedTown:null,
+  investmentData:null, btsData:null, invReqList:null, invReqFilter:'',
   selectedTown:null,
   todayRecord:null,
   yesterdayRecord:null,
@@ -788,6 +790,8 @@ function renderRsmShell(){
       <button class="tab ${state.rsmView==='yesterday'?'active':''}" onclick="setRsmView('yesterday')">Yesterday</button>
       <button class="tab ${state.rsmView==='mtd'?'active':''}" onclick="setRsmView('mtd')">MTD Report</button>
       <button class="tab ${state.rsmView==='achievement'?'active':''}" onclick="setRsmView('achievement')">Target vs Achievement</button>
+      <button class="tab ${state.rsmView==='investment'?'active':''}" onclick="setRsmView('investment')">Investment Tracker</button>
+      <button class="tab ${state.rsmView==='bts'?'active':''}" onclick="setRsmView('bts')">Balance to Ship</button>
     </div>
     <div id="rsmBody"><div class="loading">Loading…</div></div>
   </div>
@@ -797,6 +801,8 @@ function renderRsmShell(){
       <button class="bottom-nav-item ${state.rsmView==='yesterday'?'active':''}" onclick="setRsmView('yesterday')"><span class="ic">◐</span>Yesterday</button>
       <button class="bottom-nav-item ${state.rsmView==='mtd'?'active':''}" onclick="setRsmView('mtd')"><span class="ic">▤</span>MTD</button>
       <button class="bottom-nav-item ${state.rsmView==='achievement'?'active':''}" onclick="setRsmView('achievement')"><span class="ic">◈</span>T v A</button>
+      <button class="bottom-nav-item ${state.rsmView==='investment'?'active':''}" onclick="setRsmView('investment')"><span class="ic">$</span>Invest.</button>
+      <button class="bottom-nav-item ${state.rsmView==='bts'?'active':''}" onclick="setRsmView('bts')"><span class="ic">▶</span>BTS</button>
     </div>
   </div>`;
 }
@@ -815,7 +821,13 @@ async function loadRsmView(){
     body.innerHTML = renderRsmReadonly(state.yesterdayRecord, 'Yesterday · '+prettyDate(todayStr(-1)));
   } else if(state.rsmView==='achievement'){
     await loadRsmAchievementView();
-  } else {
+  } else if(state.rsmView==='investment'){
+    if(!state.investmentData) state.investmentData = await computeInvestmentTrackerRows(TOWN_DATA[rsmId].towns);
+    body.innerHTML = renderInvestmentTracker(TOWN_DATA[rsmId].name, TOWN_DATA[rsmId].towns);
+  } else if(state.rsmView==='bts'){
+    if(!state.btsData) state.btsData = await computeBalanceToShipRollup(TOWN_DATA[rsmId].towns);
+    body.innerHTML = renderBalanceToShip(TOWN_DATA[rsmId].name);
+  } else if(state.rsmView==='mtd'){
     if(!state.rsmMtdMode) state.rsmMtdMode = 'mtd';
     if(state.rsmMtdMode==='ytd'){
       if(!state.ytdData) state.ytdData = await buildRsmYtd(rsmId);
@@ -1348,6 +1360,8 @@ function renderTsmShell(){
       <button class="tab ${state.tsmView==='daily'?'active':''}" onclick="setTsmView('daily')">Daily Dashboard</button>
       <button class="tab ${state.tsmView==='mtd'?'active':''}" onclick="setTsmView('mtd')">MTD Dashboard</button>
       <button class="tab ${state.tsmView==='achievement'?'active':''}" onclick="setTsmView('achievement')">Target vs Achievement</button>
+      <button class="tab ${state.tsmView==='investment'?'active':''}" onclick="setTsmView('investment')">Investment Tracker</button>
+      <button class="tab ${state.tsmView==='bts'?'active':''}" onclick="setTsmView('bts')">Balance to Ship</button>
     </div>
     <div id="nsmBody"><div class="loading">Loading…</div></div>
   </div>
@@ -1356,6 +1370,8 @@ function renderTsmShell(){
       <button class="bottom-nav-item ${state.tsmView==='daily'?'active':''}" onclick="setTsmView('daily')"><span class="ic">●</span>Daily</button>
       <button class="bottom-nav-item ${state.tsmView==='mtd'?'active':''}" onclick="setTsmView('mtd')"><span class="ic">▤</span>MTD</button>
       <button class="bottom-nav-item ${state.tsmView==='achievement'?'active':''}" onclick="setTsmView('achievement')"><span class="ic">◈</span>T v A</button>
+      <button class="bottom-nav-item ${state.tsmView==='investment'?'active':''}" onclick="setTsmView('investment')"><span class="ic">$</span>Invest.</button>
+      <button class="bottom-nav-item ${state.tsmView==='bts'?'active':''}" onclick="setTsmView('bts')"><span class="ic">▶</span>BTS</button>
     </div>
   </div>`;
 }
@@ -1392,6 +1408,12 @@ async function loadTsmView(){
         }
         body.innerHTML = await renderTvaScreen({title: state.user.name, rows: state.tvaRows, onBack:null, townsBelow: towns, downloadName: state.user.name.replace(/\s+—.*/,'')});
       }
+    } else if(state.tsmView==='investment'){
+      if(!state.investmentData) state.investmentData = await computeInvestmentTrackerRows(towns);
+      body.innerHTML = renderInvestmentTracker(state.user.name, towns);
+    } else if(state.tsmView==='bts'){
+      if(!state.btsData) state.btsData = await computeBalanceToShipRollup(towns);
+      body.innerHTML = renderBalanceToShip(state.user.name);
     } else {
       if(!state.tsmDailyData){
         const rsmIds = tsmScopedRsmIds();
@@ -1540,8 +1562,12 @@ function renderNsmShell(){
       <button class="tab ${state.nsmView==='daily'?'active':''}" onclick="setNsmView('daily')">Daily Dashboard</button>
       <button class="tab ${state.nsmView==='mtd'?'active':''}" onclick="setNsmView('mtd')">MTD Dashboard</button>
       ${canViewTva ? `<button class="tab ${state.nsmView==='achievement'?'active':''}" onclick="setNsmView('achievement')">Target vs Achievement</button>` : ''}
+      ${canViewTva ? `<button class="tab ${state.nsmView==='investment'?'active':''}" onclick="setNsmView('investment')">Investment Tracker</button>` : ''}
+      ${canViewTva ? `<button class="tab ${state.nsmView==='bts'?'active':''}" onclick="setNsmView('bts')">Balance to Ship</button>` : ''}
       ${canUploadOverdue ? `<button class="tab ${state.nsmView==='upload'?'active':''}" onclick="setNsmView('upload')">Upload Overdue</button>` : ''}
       ${canUploadTva ? `<button class="tab ${state.nsmView==='tvaupload'?'active':''}" onclick="setNsmView('tvaupload')">T v A Upload</button>` : ''}
+      ${canUploadTva ? `<button class="tab ${state.nsmView==='invupload'?'active':''}" onclick="setNsmView('invupload')">Investment Upload</button>` : ''}
+      ${canUploadTva ? `<button class="tab ${state.nsmView==='btsupload'?'active':''}" onclick="setNsmView('btsupload')">Balance to Ship Upload</button>` : ''}
     </div>
     <div id="nsmBody"><div class="loading">Loading…</div></div>
   </div>
@@ -1550,6 +1576,8 @@ function renderNsmShell(){
       <button class="bottom-nav-item ${state.nsmView==='daily'?'active':''}" onclick="setNsmView('daily')"><span class="ic">●</span>Daily</button>
       <button class="bottom-nav-item ${state.nsmView==='mtd'?'active':''}" onclick="setNsmView('mtd')"><span class="ic">▤</span>MTD</button>
       ${canViewTva ? `<button class="bottom-nav-item ${state.nsmView==='achievement'?'active':''}" onclick="setNsmView('achievement')"><span class="ic">◈</span>T v A</button>` : ''}
+      ${canViewTva ? `<button class="bottom-nav-item ${state.nsmView==='investment'?'active':''}" onclick="setNsmView('investment')"><span class="ic">$</span>Invest.</button>` : ''}
+      ${canViewTva ? `<button class="bottom-nav-item ${state.nsmView==='bts'?'active':''}" onclick="setNsmView('bts')"><span class="ic">▶</span>BTS</button>` : ''}
       ${canUploadOverdue ? `<button class="bottom-nav-item ${state.nsmView==='upload'?'active':''}" onclick="setNsmView('upload')"><span class="ic">⬆</span>Upload</button>` : ''}
       ${canUploadTva ? `<button class="bottom-nav-item ${state.nsmView==='tvaupload'?'active':''}" onclick="setNsmView('tvaupload')"><span class="ic">⬆</span>T v A</button>` : ''}
     </div>
@@ -1604,6 +1632,24 @@ async function loadNsmView(){
   }
   if(state.nsmView==='tvaupload'){
     await loadTvaUploadView();
+    return;
+  }
+  if(state.nsmView==='investment'){
+    if(!state.investmentData) state.investmentData = await computeInvestmentTrackerRows(ALL_TOWNS_FLAT());
+    body.innerHTML = renderInvestmentTracker('All Regions', ALL_TOWNS_FLAT());
+    return;
+  }
+  if(state.nsmView==='bts'){
+    if(!state.btsData) state.btsData = await computeBalanceToShipRollup(ALL_TOWNS_FLAT());
+    body.innerHTML = renderBalanceToShip('All Regions');
+    return;
+  }
+  if(state.nsmView==='invupload'){
+    await loadInvestmentUploadView();
+    return;
+  }
+  if(state.nsmView==='btsupload'){
+    await loadBalanceToShipUploadView();
     return;
   }
   if(!state.nsmOverdueMap) state.nsmOverdueMap = await fetchOverdueMap(null);
@@ -1870,6 +1916,7 @@ function refreshCurrentViewData(){
   } else {
     state.nsmDailyRecords=null; state.nsmMtdData=null; state.nsmYtdData=null; state.nsmOverdueMap=null; state.overdueForDate=null;
   }
+  state.investmentData=null; state.btsData=null;
   render();
 }
 document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') refreshCurrentViewData(); });
@@ -2592,7 +2639,7 @@ async function handleSaveFamilyMeta(family, category, subtotalUom, convFactor, p
 /* ---- Target Upload: matches the Annual Target Allocation format (sheet per town) ---- */
 const TVA_SHEET_TOWN = {
  KHI:'Karachi',HYD:'Hyderabad',MPK:'Mirpurkhas',NWS:'Nawabshah',SUK:'Sukkur',LRK:'Larkana',
- QTA:'Quetta',RYK:'Rahimyar Khan',KNP:'Khanpur',SDQ:'Sadiqabad',TRB:'Turbat',KHR:'Khairpurmirs',
+ QTA:'Quetta',RYK:'Rahimyar Khan',KNP:'Khanpur',SDQ:'Sadiqabad',TRB:'Turbat',
  BHW:'Bahawalpur',APE:'Ahmed pur East',MUL:'Multan',DGK:'Dera Ghazi Khan',MZH:'Muzaffargarh',
  BWN:'Bhawalnagar',CHS:'Chishtian',MNC:'Mian Chunnu',VHR:'Vihari',
  FSD:'Faisalabad',OKR:'Okara',SHW:'Sahiwal',PPS:'Pak Patan Shrif',BRW:'Burewala',
@@ -2748,7 +2795,24 @@ const TVA_TOWN_ALIASES = {
   'wah cantt.': 'Wah Cantt',
   'dera ismail khan': 'DI Khan',
   'takht bhai': 'Takht Bahi',
+  'bahawal pur': 'Bahawalpur',
+  'bhimbher': 'Bhimber',
+  'chistian': 'Chishtian',
+  'kamonke': 'Kamonki',
+  'muzaffarbad': 'Muzaffarabad',
+  'pakpatan': 'Pak Pattan',
+  'takht-i-bhai': 'Takht Bahi',
 };
+// Simple plain-name normalizer (no "code-Town(Region)" prefix to strip) —
+// used by the investment/balance uploaders, which give plain town names.
+function tvaNormalizeTownPlain(t){
+  if(t==null) return null;
+  const key = String(t).trim().toLowerCase();
+  const aliased = TVA_TOWN_ALIASES[key];
+  if(aliased) return aliased;
+  const hit = TOWN_TO_RSM[key];
+  return hit ? hit.town : null;
+}
 function tvaFindTownFromHeader(h){
   if(!h) return null;
   const s = String(h);
@@ -2895,6 +2959,503 @@ async function handleTvaAchievementFileUpload(file){
     statusEl.innerHTML = `<div class="err">Could not process file: ${esc(e.message||String(e))}</div>`;
   }
 }
+/* ============================================================
+   INVESTMENT TRACKER
+   ============================================================ */
+async function fetchInvestmentRequired(){
+  if(!sb) return {};
+  const {data, error} = await sb.from('investment_required').select('*');
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=> map[r.town] = Number(r.amount)||0);
+  return map;
+}
+async function fetchLatestStockCredit(){
+  if(!sb) return {asOf:null, map:{}};
+  const {data: latest, error: e1} = await sb.from('distributor_stock_credit').select('as_of_date').order('as_of_date', {ascending:false}).limit(1);
+  if(e1 || !latest || !latest.length) return {asOf:null, map:{}};
+  const asOf = latest[0].as_of_date;
+  const {data, error} = await sb.from('distributor_stock_credit').select('*').eq('as_of_date', asOf);
+  if(error){ console.error(error); return {asOf, map:{}}; }
+  const map = {};
+  (data||[]).forEach(r=>{
+    map[r.town] = {
+      stock: Number(r.distributor_stock)||0,
+      transit: Number(r.stock_in_transit)||0,
+      credit: Number(r.market_credit)||0
+    };
+  });
+  return {asOf, map};
+}
+async function fetchLatestReceivableAtDil(){
+  if(!sb) return {asOf:null, map:null};
+  const {data: latest, error: e1} = await sb.from('receivable_at_dil').select('as_of_date').order('as_of_date', {ascending:false}).limit(1);
+  if(e1 || !latest || !latest.length) return {asOf:null, map:null};
+  const asOf = latest[0].as_of_date;
+  const {data, error} = await sb.from('receivable_at_dil').select('*').eq('as_of_date', asOf);
+  if(error){ console.error(error); return {asOf, map:null}; }
+  const map = {};
+  (data||[]).forEach(r=> map[r.town] = Number(r.amount)||0);
+  return {asOf, map};
+}
+async function computeInvestmentTrackerRows(towns){
+  const [required, stockData, overdueMap, realReceivable] = await Promise.all([
+    fetchInvestmentRequired(),
+    fetchLatestStockCredit(),
+    fetchOverdueMap(null),
+    fetchLatestReceivableAtDil()
+  ]);
+  const useReal = realReceivable.map !== null; // real data uploaded at least once — prefer it over the proxy
+  const rows = towns.map(t=>{
+    const req = required[t]||0;
+    const sc = stockData.map[t] || {stock:0, transit:0, credit:0};
+    let receivableAtDil;
+    if(useReal){
+      receivableAtDil = realReceivable.map[t] || 0;
+    } else {
+      const od = overdueMap[t] || {due2:0, due5:0, due10:0, amount:0};
+      receivableAtDil = (od.due2||0)+(od.due5||0)+(od.due10||0)+(od.amount||0);
+    }
+    const totalStock = sc.stock + sc.transit;
+    const netInvestment = totalStock + sc.credit - receivableAtDil;
+    const variance = netInvestment - req;
+    const varPct = req !== 0 ? (variance/req*100) : null;
+    return {
+      town: t, required: req, receivableAtDil, currentStock: sc.stock, inTransit: sc.transit,
+      totalStock, marketCredit: sc.credit, netInvestment, variance, varPct
+    };
+  });
+  return {asOf: stockData.asOf, receivableAsOf: realReceivable.asOf, receivableIsReal: useReal, rows};
+}
+function renderInvestmentTracker(title, towns){
+  const {asOf, receivableAsOf, receivableIsReal, rows} = state.investmentData || {asOf:null, receivableAsOf:null, receivableIsReal:false, rows:[]};
+  let totReq=0, totRec=0, totStock=0, totTransit=0, totMktCredit=0, totNet=0;
+  rows.forEach(r=>{ totReq+=r.required; totRec+=r.receivableAtDil; totStock+=r.currentStock; totTransit+=r.inTransit; totMktCredit+=r.marketCredit; totNet+=r.netInvestment; });
+  const totVariance = totNet - totReq;
+  const totVarPct = totReq!==0 ? (totVariance/totReq*100) : null;
+  const receivableNote = receivableIsReal
+    ? `Receivable as of ${prettyDate(receivableAsOf)} (actual)`
+    : `Receivable estimated from aging buckets — upload the actual Past Due Report for real figures`;
+  return `
+  <div class="panel">
+    <h3>Distributor Past Dues, Stock &amp; Receivable Details <span class="cnt">${title} · Stock/Credit as of ${asOf?prettyDate(asOf):'not uploaded yet'} · ${receivableNote}</span></h3>
+    <div class="cards-row">
+      <div class="stat-card"><div class="stat-label">Investment Required</div><div class="stat-value">${fmt(totReq)}</div></div>
+      <div class="stat-card"><div class="stat-label">Net Investment</div><div class="stat-value">${fmt(totNet)}</div></div>
+      <div class="stat-card"><div class="stat-label">Variance</div><div class="stat-value ${totVariance>=0?'pos':'neg'}">${fmt(totVariance)}${totVarPct!=null?` (${totVarPct.toFixed(0)}%)`:''}</div></div>
+    </div>
+    <table class="responsive-table" style="margin-top:14px;">
+      <thead><tr>
+        <th>Town</th><th class="num">Investment Required</th><th class="num">Total Receivable at DIL</th>
+        <th class="num">Current Distributor Stock</th><th class="num">Stock In-Transit</th><th class="num">Total Stock</th>
+        <th class="num">Total Market Credit</th><th class="num">Distributor Net Investment</th><th class="num">Var +/-</th>
+      </tr></thead>
+      <tbody>
+      ${rows.map(r=>`<tr>
+        <td data-label="Town"><b>${esc(r.town)}</b></td>
+        <td class="num" data-label="Investment Required">${fmt(r.required)}</td>
+        <td class="num" data-label="Total Receivable at DIL">${fmt(r.receivableAtDil)}</td>
+        <td class="num" data-label="Current Distributor Stock">${fmt(r.currentStock)}</td>
+        <td class="num" data-label="Stock In-Transit">${r.inTransit?fmt(r.inTransit):'-'}</td>
+        <td class="num" data-label="Total Stock">${fmt(r.totalStock)}</td>
+        <td class="num" data-label="Total Market Credit">${fmt(r.marketCredit)}</td>
+        <td class="num" data-label="Distributor Net Investment" style="background:${r.netInvestment<r.required?'#FDECEA':'#EAF6EC'};font-weight:700;">${fmt(r.netInvestment)}</td>
+        <td class="num ${r.variance>=0?'pos':'neg'}" data-label="Var +/-">${fmt(r.variance)}${r.varPct!=null?` (${r.varPct.toFixed(0)}%)`:''}</td>
+      </tr>`).join('')}
+      </tbody>
+      <tfoot><tr style="font-weight:700;background:var(--panel-alt);">
+        <td data-label="Town">Total</td>
+        <td class="num">${fmt(totReq)}</td>
+        <td class="num">${fmt(totRec)}</td>
+        <td class="num">${fmt(totStock)}</td>
+        <td class="num">${fmt(totTransit)}</td>
+        <td class="num">${fmt(totStock+totTransit)}</td>
+        <td class="num">${fmt(totMktCredit)}</td>
+        <td class="num">${fmt(totNet)}</td>
+        <td class="num ${totVariance>=0?'pos':'neg'}">${fmt(totVariance)}${totVarPct!=null?` (${totVarPct.toFixed(0)}%)`:''}</td>
+      </tr></tfoot>
+    </table>
+  </div>`;
+}
+
+/* ---- Admin: Investment Required — direct input + bulk upload ---- */
+async function loadInvestmentUploadView(){
+  const body = document.getElementById('nsmBody');
+  if(!state.invReqList) state.invReqList = await fetchInvestmentRequiredList();
+  body.innerHTML = renderInvestmentUploadPanel();
+}
+async function fetchInvestmentRequiredList(){
+  const req = await fetchInvestmentRequired();
+  return ALL_TOWNS_FLAT().map(t=>({town:t, amount: req[t]||0}));
+}
+function renderInvestmentUploadPanel(){
+  const list = state.invReqList||[];
+  return `
+  <div class="panel">
+    <h3>Investment Required — Direct Input <span class="cnt">edit any town, saves immediately, reflects on the report right away</span></h3>
+    <div class="row-flex" style="margin-bottom:12px;">
+      <input id="invReqFilter" placeholder="Search town…" value="${esc(state.invReqFilter||'')}" oninput="state.invReqFilter=this.value;render();" style="width:100%;max-width:300px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;">
+    </div>
+    <table class="responsive-table">
+      <thead><tr><th>Town</th><th>Investment Required (Rs)</th><th></th></tr></thead>
+      <tbody>
+      ${list.filter(r=> !state.invReqFilter || r.town.toLowerCase().includes(state.invReqFilter.toLowerCase())).map(r=>`<tr>
+        <td data-label="Town">${esc(r.town)}</td>
+        <td data-label="Investment Required"><input id="invReqInput_${esc(r.town)}" type="number" value="${r.amount}" style="width:100%;max-width:200px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;"></td>
+        <td><button class="btn btn-primary btn-sm" onclick="handleSaveInvestmentRequired('${escJs(r.town)}')">Save</button></td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>
+  <div class="panel">
+    <h3>Bulk Upload — Investment Required <span class="cnt">CSV/Excel: Town, Investment Required Amount</span></h3>
+    <p style="font-size:12.5px;color:var(--muted);">Two columns, any header names — Town and an amount. Updates only the towns listed; other towns keep their current value.</p>
+    <input type="file" accept=".csv,.xlsx,.xls" onchange="handleInvestmentRequiredUpload(this.files[0])">
+    <div id="invReqUploadStatus" style="margin-top:10px;"></div>
+  </div>
+  <div class="panel">
+    <h3>Daily Upload — Distributor Stock &amp; Market Credit <span class="cnt">one row per town: Town, Distributor Stock, Market Credit, (optional) Stock In-Transit</span></h3>
+    <p style="font-size:12.5px;color:var(--muted);">Re-uploading for the same date replaces that date's data. The report always shows the most recent date uploaded.</p>
+    <div class="row-flex" style="margin-bottom:10px;">
+      <div class="field"><label>As of Date</label><input type="date" id="stockCreditDate" value="${todayStr()}"></div>
+    </div>
+    <input type="file" accept=".csv,.xlsx,.xls" onchange="handleStockCreditUpload(this.files[0])">
+    <div id="stockCreditUploadStatus" style="margin-top:10px;"></div>
+  </div>
+  <div class="panel">
+    <h3>Daily Upload — Total Receivable at DIL <span class="cnt">from the Past Due Invoice Report (.docx), town-wise via your customer→town mapping</span></h3>
+    <p style="font-size:12.5px;color:var(--muted);">Reads every "Total For Customer" line, sums Balance Due per customer, then maps each customer to its town using the same mapping used for Daily Plan entry. Any customer without a mapping is listed below so you can add it — those amounts are excluded from the total until mapped.</p>
+    <div class="row-flex" style="margin-bottom:10px;">
+      <div class="field"><label>As of Date</label><input type="date" id="receivableDate" value="${todayStr()}"></div>
+    </div>
+    <input type="file" accept=".docx" onchange="handleReceivableUpload(this.files[0])">
+    <div id="receivableUploadStatus" style="margin-top:10px;"></div>
+  </div>`;
+}
+async function handleSaveInvestmentRequired(town){
+  const val = Number(document.getElementById(`invReqInput_${town}`).value)||0;
+  const {error} = await sb.from('investment_required').upsert({town, amount:val, updated_at:new Date().toISOString()}, {onConflict:'town'});
+  if(error){ alert('Could not save: '+error.message); return; }
+  state.invReqList = null; state.investmentData = null;
+  render();
+}
+async function handleInvestmentRequiredUpload(file){
+  if(!file) return;
+  const statusEl = document.getElementById('invReqUploadStatus');
+  statusEl.innerHTML = '<div class="loading">Processing…</div>';
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, {type:'array'});
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const grid = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    const rows = [];
+    for(let r=1; r<grid.length; r++){
+      const row = grid[r]; if(!row || row[0]==null) continue;
+      const town = tvaNormalizeTownPlain(row[0]);
+      const amount = Number(row[1]);
+      if(!town || isNaN(amount)) continue;
+      rows.push({town, amount, updated_at:new Date().toISOString()});
+    }
+    if(!rows.length){ statusEl.innerHTML = '<div class="err">No usable rows found — check the Town column matches your defined towns.</div>'; return; }
+    const {error} = await sb.from('investment_required').upsert(rows, {onConflict:'town'});
+    if(error){ statusEl.innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
+    statusEl.innerHTML = `<div class="ok">Saved ${rows.length} towns.</div>`;
+    state.invReqList = null; state.investmentData = null;
+  }catch(e){
+    statusEl.innerHTML = `<div class="err">Could not process file: ${esc(e.message||String(e))}</div>`;
+  }
+}
+/* ---- Total Receivable at DIL: parses the "Total For Customer" lines directly
+   from the docx's raw word/document.xml, rather than trusting a text-conversion
+   library — the ERP-exported report uses fixed-width Courier text with tab
+   stops (not a real Word table), and generic docx-to-text conversion has been
+   observed to lose numbers on long lines. Regex on the raw XML avoids that. ---- */
+async function parseTotalReceivableDocx(file){
+  const buf = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(buf);
+  const xmlFile = zip.file('word/document.xml');
+  if(!xmlFile) throw new Error('Could not find word/document.xml inside this file — is it a valid .docx?');
+  const xml = await xmlFile.async('string');
+  // one paragraph = one <w:p ...>...</w:p>; concatenate all <w:t> runs within it
+  const paraRegex = /<w:p [^>]*>[\s\S]*?<\/w:p>/g;
+  const textRegex = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g;
+  const paras = xml.match(paraRegex) || [];
+  const lines = [];
+  for(const p of paras){
+    let m, line='';
+    textRegex.lastIndex = 0;
+    while((m = textRegex.exec(p))) line += m[1];
+    if(line.trim()) lines.push(line);
+  }
+  const totalLineRegex = /Total For Customer:\s*(.+?)\s{2,}([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s*$/;
+  const customers = [];
+  for(const l of lines){
+    if(!l.includes('Total For Customer')) continue;
+    const m = totalLineRegex.exec(l.trim());
+    if(m){
+      customers.push({name: m[1].trim(), balanceDue: Number(m[4].replace(/,/g,''))});
+    }
+  }
+  return customers;
+}
+async function handleReceivableUpload(file){
+  if(!file) return;
+  const asOf = document.getElementById('receivableDate').value;
+  const statusEl = document.getElementById('receivableUploadStatus');
+  statusEl.innerHTML = '<div class="loading">Processing…</div>';
+  try{
+    const customers = await parseTotalReceivableDocx(file);
+    if(!customers.length){ statusEl.innerHTML = '<div class="err">No "Total For Customer" lines found — is this the right report?</div>'; return; }
+    const custMap = await fetchCustomerTownMap();
+    const byTown = {};
+    const unmatched = [];
+    let matchedTotal = 0, unmatchedTotal = 0;
+    customers.forEach(c=>{
+      const hit = custMap[c.name];
+      if(hit && hit.town){
+        byTown[hit.town] = (byTown[hit.town]||0) + c.balanceDue;
+        matchedTotal += c.balanceDue;
+      } else {
+        unmatched.push(c);
+        unmatchedTotal += c.balanceDue;
+      }
+    });
+    const rows = Object.entries(byTown).map(([town,amount])=>({as_of_date:asOf, town, amount}));
+    await sb.from('receivable_at_dil').delete().eq('as_of_date', asOf);
+    const {error} = await sb.from('receivable_at_dil').upsert(rows, {onConflict:'as_of_date,town'});
+    if(error){ statusEl.innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
+    let html = `<div class="ok">Saved ${rows.length} towns for ${prettyDate(asOf)} — ${customers.length} customers read, ${customers.length-unmatched.length} mapped to a town (Rs ${Math.round(matchedTotal).toLocaleString()}).</div>`;
+    if(unmatched.length){
+      html += `<div class="err" style="margin-top:10px;">${unmatched.length} customer(s) have no town mapping (Rs ${Math.round(unmatchedTotal).toLocaleString()} excluded from the total until mapped) — add them via the customer-town mapping used on Daily Plan entry:<br>${unmatched.map(c=>`${esc(c.name)} — Rs ${Math.round(c.balanceDue).toLocaleString()}`).join('<br>')}</div>`;
+    }
+    statusEl.innerHTML = html;
+    state.investmentData = null;
+  }catch(e){
+    statusEl.innerHTML = `<div class="err">Could not process file: ${esc(e.message||String(e))}</div>`;
+  }
+}
+async function handleStockCreditUpload(file){
+  if(!file) return;
+  const asOf = document.getElementById('stockCreditDate').value;
+  const statusEl = document.getElementById('stockCreditUploadStatus');
+  statusEl.innerHTML = '<div class="loading">Processing…</div>';
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, {type:'array'});
+    // If the file has multiple sheets (e.g. one per date), try to find the
+    // one matching the entered date; otherwise use the last sheet, since a
+    // dated export tends to append newer dates rather than prepend them.
+    let sheetName = wb.SheetNames[wb.SheetNames.length-1];
+    let sheetNote = '';
+    if(wb.SheetNames.length > 1){
+      const d = new Date(asOf+'T00:00:00');
+      const dd = String(d.getDate()).padStart(2,'0');
+      const mon = d.toLocaleString('en-US',{month:'short'});
+      const yy = String(d.getFullYear()).slice(-2);
+      const wantedPatterns = [`${dd}-${mon}-${yy}`, `${dd}-${mon}-${d.getFullYear()}`];
+      const match = wb.SheetNames.find(sn => wantedPatterns.some(p => sn.trim().toLowerCase().includes(p.toLowerCase())));
+      if(match) sheetName = match;
+      sheetNote = ` (multi-sheet file — used sheet "${sheetName}"${match?' matching the entered date':', no sheet name matched the entered date, used the last sheet instead — double check this is right'})`;
+    }
+    const ws = wb.Sheets[sheetName];
+    const grid = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    // find header row (first row containing "town" as a cell, case-insensitive)
+    let headerRow=-1;
+    for(let r=0;r<Math.min(grid.length,10);r++){
+      if((grid[r]||[]).some(c=>c && String(c).trim().toLowerCase()==='towns' || (c && String(c).trim().toLowerCase()==='town'))){ headerRow=r; break; }
+    }
+    if(headerRow<0){ statusEl.innerHTML = '<div class="err">Could not find a Town column header.</div>'; return; }
+    const hdr = (grid[headerRow]||[]).map(c=> c==null?'':String(c).trim().toLowerCase());
+    const townCol = hdr.findIndex(c=>c==='town'||c==='towns');
+    const stockCol = hdr.findIndex(c=>c.includes('stock') && !c.includes('transit'));
+    const creditCol = hdr.findIndex(c=>c.includes('balance') || c.includes('credit'));
+    const transitCol = hdr.findIndex(c=>c.includes('transit'));
+    if(townCol<0 || stockCol<0){ statusEl.innerHTML = '<div class="err">Could not find Town and Stock columns.</div>'; return; }
+    const byTown = {};
+    for(let r=headerRow+1; r<grid.length; r++){
+      const row = grid[r]; if(!row || row[townCol]==null) continue;
+      const town = tvaNormalizeTownPlain(row[townCol]);
+      if(!town) continue;
+      const stock = Number(row[stockCol])||0;
+      const credit = creditCol>=0 ? (Number(row[creditCol])||0) : 0;
+      const transit = transitCol>=0 ? (Number(row[transitCol])||0) : 0;
+      // sum in case a town has multiple distributors
+      if(!byTown[town]) byTown[town] = {distributor_stock:0, market_credit:0, stock_in_transit:0};
+      byTown[town].distributor_stock += stock;
+      byTown[town].market_credit += credit;
+      byTown[town].stock_in_transit += transit;
+    }
+    const rows = Object.entries(byTown).map(([town,v])=>({as_of_date:asOf, town, ...v}));
+    if(!rows.length){ statusEl.innerHTML = '<div class="err">No usable rows found.</div>'; return; }
+    const zeroCreditCount = rows.filter(r=>r.market_credit===0).length;
+    let warn = '';
+    if(creditCol>=0 && zeroCreditCount > rows.length*0.5){
+      warn = `<br><span style="color:var(--amber);">⚠ ${zeroCreditCount} of ${rows.length} towns show zero Market Credit — check the source file actually has this column populated for this date before trusting the report.</span>`;
+    }
+    await sb.from('distributor_stock_credit').delete().eq('as_of_date', asOf);
+    const {error} = await sb.from('distributor_stock_credit').upsert(rows, {onConflict:'as_of_date,town'});
+    if(error){ statusEl.innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
+    statusEl.innerHTML = `<div class="ok">Saved ${rows.length} towns for ${prettyDate(asOf)}${esc(sheetNote)}.${warn}</div>`;
+    state.investmentData = null;
+  }catch(e){
+    statusEl.innerHTML = `<div class="err">Could not process file: ${esc(e.message||String(e))}</div>`;
+  }
+}
+
+/* ============================================================
+   BALANCE TO SHIP
+   ============================================================ */
+async function fetchBalanceToShip(towns){
+  if(!sb) return {asOf:null, rows:[]};
+  const {data: latest, error: e1} = await sb.from('balance_to_ship').select('as_of_date').order('as_of_date', {ascending:false}).limit(1);
+  if(e1 || !latest || !latest.length) return {asOf:null, rows:[]};
+  const asOf = latest[0].as_of_date;
+  const data = await fetchAllPaged(()=> sb.from('balance_to_ship').select('*').eq('as_of_date', asOf).in('town', towns).order('id'));
+  return {asOf, rows: data};
+}
+async function computeBalanceToShipRollup(towns){
+  const [hierarchy, familyMeta, bts] = await Promise.all([
+    fetchProductHierarchyV4(), fetchFamilyMeta(), fetchBalanceToShip(towns)
+  ]);
+  const byFamily = {};
+  bts.rows.forEach(r=>{
+    const meta = hierarchy[r.sku_code];
+    const family = meta ? meta.family : null;
+    if(!family) return;
+    if(!byFamily[family]) byFamily[family] = {orderQty:0, orderValue:0, salesQty:0, salesValue:0};
+    byFamily[family].orderQty += Number(r.order_qty)||0;
+    byFamily[family].orderValue += Number(r.order_value)||0;
+    byFamily[family].salesQty += Number(r.sales_qty)||0;
+    byFamily[family].salesValue += Number(r.sales_value)||0;
+  });
+  const rows = Object.entries(byFamily).map(([family, v])=>{
+    const meta = familyMeta[family] || {};
+    return {
+      family, category: meta.category||'Uncategorized', subtotalUom: meta.subtotalUom||'pcs', conversionFactor: meta.conversionFactor,
+      orderQty: v.orderQty, orderValue: v.orderValue, salesQty: v.salesQty, salesValue: v.salesValue,
+      balanceQty: v.orderQty - v.salesQty, balanceValue: v.orderValue - v.salesValue
+    };
+  });
+  return {asOf: bts.asOf, rows};
+}
+function renderBalanceToShip(title){
+  const {asOf, rows} = state.btsData || {asOf:null, rows:[]};
+  const sorted = [...rows].sort((a,b)=>a.family.localeCompare(b.family));
+  const byCategory = {};
+  sorted.forEach(r=> (byCategory[r.category]=byCategory[r.category]||[]).push(r));
+  const categoryOrder = Object.keys(byCategory).sort((a,b)=>a.localeCompare(b));
+  let totOrderQty=0, totOrderVal=0, totSalesQty=0, totSalesVal=0, totBalQty=0, totBalVal=0;
+  sorted.forEach(r=>{ totOrderQty+=r.orderQty; totOrderVal+=r.orderValue; totSalesQty+=r.salesQty; totSalesVal+=r.salesValue; totBalQty+=r.balanceQty; totBalVal+=r.balanceValue; });
+  return `
+  <div class="panel">
+    <h3>Balance to Ship <span class="cnt">${title} · as of ${asOf?prettyDate(asOf):'not uploaded yet'}</span></h3>
+    <div class="cards-row">
+      <div class="stat-card"><div class="stat-label">Net Order Qty</div><div class="stat-value">${tvaFmtQty(totOrderQty)}</div></div>
+      <div class="stat-card"><div class="stat-label">Net Sales Qty</div><div class="stat-value">${tvaFmtQty(totSalesQty)}</div></div>
+      <div class="stat-card"><div class="stat-label">Balance to Ship (Qty)</div><div class="stat-value">${tvaFmtQty(totBalQty)}</div></div>
+      <div class="stat-card"><div class="stat-label">Balance to Ship (Value)</div><div class="stat-value">${tvaFmtRs(totBalVal)}</div></div>
+    </div>
+    <table class="responsive-table" style="margin-top:14px;">
+      <thead><tr>
+        <th>Product</th><th class="num">Order Qty</th><th class="num">Order Value</th>
+        <th class="num">Sales Qty</th><th class="num">Sales Value</th>
+        <th class="num">Balance Qty</th><th class="num">Balance Value</th>
+      </tr></thead>
+      <tbody>
+      ${categoryOrder.map(cat=>{
+        const famRows = byCategory[cat];
+        let cOq=0,cOv=0,cSq=0,cSv=0,cBq=0,cBv=0;
+        const familyLines = famRows.map(r=>{
+          cOq+=r.orderQty; cOv+=r.orderValue; cSq+=r.salesQty; cSv+=r.salesValue; cBq+=r.balanceQty; cBv+=r.balanceValue;
+          return `<tr>
+            <td data-label="Product">${esc(r.family)}</td>
+            <td class="num" data-label="Order Qty">${tvaFmtQty(r.orderQty)}</td>
+            <td class="num" data-label="Order Value">${tvaFmtRs(r.orderValue)}</td>
+            <td class="num" data-label="Sales Qty">${tvaFmtQty(r.salesQty)}</td>
+            <td class="num" data-label="Sales Value">${tvaFmtRs(r.salesValue)}</td>
+            <td class="num" data-label="Balance Qty">${tvaFmtQty(r.balanceQty)}</td>
+            <td class="num" data-label="Balance Value">${tvaFmtRs(r.balanceValue)}</td>
+          </tr>`;
+        }).join('');
+        return familyLines + `<tr style="background:var(--panel-alt);font-weight:700;">
+          <td data-label="Category">Total ${esc(cat)}</td>
+          <td class="num">${tvaFmtQty(cOq)}</td><td class="num">${tvaFmtRs(cOv)}</td>
+          <td class="num">${tvaFmtQty(cSq)}</td><td class="num">${tvaFmtRs(cSv)}</td>
+          <td class="num">${tvaFmtQty(cBq)}</td><td class="num">${tvaFmtRs(cBv)}</td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+async function loadBalanceToShipUploadView(){
+  const body = document.getElementById('nsmBody');
+  body.innerHTML = renderBalanceToShipUploadPanel();
+}
+function renderBalanceToShipUploadPanel(){
+  return `
+  <div class="panel">
+    <h3>Balance to Ship — Upload <span class="cnt">flat export: ITEM_ID, TOWN, Net Order Qty(Pcs), Net Order Value, Net Sales Qty(Pcs), Net Sales Value</span></h3>
+    <p style="font-size:12.5px;color:var(--muted);">Re-uploading replaces the entire previous snapshot — the report always shows the most recently uploaded data in full.</p>
+    <div class="row-flex" style="margin-bottom:10px;">
+      <div class="field"><label>As of Date</label><input type="date" id="btsDate" value="${todayStr()}"></div>
+    </div>
+    <input type="file" accept=".csv,.xlsx,.xls" onchange="handleBalanceToShipUpload(this.files[0])">
+    <div id="btsUploadStatus" style="margin-top:10px;"></div>
+  </div>`;
+}
+async function handleBalanceToShipUpload(file){
+  if(!file) return;
+  const asOf = document.getElementById('btsDate').value;
+  const statusEl = document.getElementById('btsUploadStatus');
+  statusEl.innerHTML = '<div class="loading">Processing…</div>';
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, {type:'array'});
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const grid = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    const hdr = (grid[0]||[]).map(c=> c==null?'':String(c).trim().toLowerCase());
+    const itemCol = hdr.findIndex(c=>c==='item_id'||c==='sku code'||c==='item id');
+    const townCol = hdr.findIndex(c=>c==='town');
+    const orderQtyCol = hdr.findIndex(c=>c.includes('order') && c.includes('qty'));
+    const orderValCol = hdr.findIndex(c=>c.includes('order') && c.includes('value'));
+    const salesQtyCol = hdr.findIndex(c=>c.includes('sales') && c.includes('qty'));
+    const salesValCol = hdr.findIndex(c=>c.includes('sales') && c.includes('value'));
+    if(itemCol<0 || townCol<0){ statusEl.innerHTML = '<div class="err">Could not find ITEM_ID and TOWN columns.</div>'; return; }
+    const rowsMap = {};
+    for(let r=1; r<grid.length; r++){
+      const row = grid[r]; if(!row || row[itemCol]==null || row[townCol]==null) continue;
+      const town = tvaFindTownFromHeader(row[townCol]);
+      if(!town) continue;
+      const code = String(row[itemCol]).trim().padStart(9,'0');
+      if(!/^\d{6,}$/.test(code)) continue;
+      const key = `${town}|${code}`;
+      const oq = orderQtyCol>=0 ? (Number(row[orderQtyCol])||0) : 0;
+      const ov = orderValCol>=0 ? (Number(row[orderValCol])||0) : 0;
+      const sq = salesQtyCol>=0 ? (Number(row[salesQtyCol])||0) : 0;
+      const sv = salesValCol>=0 ? (Number(row[salesValCol])||0) : 0;
+      if(!rowsMap[key]) rowsMap[key] = {as_of_date:asOf, town, sku_code:code, order_qty:0, order_value:0, sales_qty:0, sales_value:0};
+      rowsMap[key].order_qty += oq; rowsMap[key].order_value += ov;
+      rowsMap[key].sales_qty += sq; rowsMap[key].sales_value += sv;
+    }
+    const rows = Object.values(rowsMap);
+    if(!rows.length){ statusEl.innerHTML = '<div class="err">No usable rows found.</div>'; return; }
+    await sb.from('balance_to_ship').delete().eq('as_of_date', asOf);
+    let succeeded=0; const chunkErrors=[];
+    for(let i=0;i<rows.length;i+=1000){
+      const chunk = rows.slice(i,i+1000);
+      const {error} = await sb.from('balance_to_ship').upsert(chunk, {onConflict:'as_of_date,town,sku_code'});
+      if(error){ chunkErrors.push(error.message); continue; }
+      succeeded += chunk.length;
+    }
+    if(chunkErrors.length){ statusEl.innerHTML = `<div class="err">${succeeded} of ${rows.length} rows saved. ${chunkErrors.map(esc).join('<br>')}</div>`; return; }
+    statusEl.innerHTML = `<div class="ok">Saved ${succeeded} rows for ${prettyDate(asOf)}.</div>`;
+    state.btsData = null;
+  }catch(e){
+    statusEl.innerHTML = `<div class="err">Could not process file: ${esc(e.message||String(e))}</div>`;
+  }
+}
+
 /* ============================= INIT ============================= */
 restoreSession();
 render();
