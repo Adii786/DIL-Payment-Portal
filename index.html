@@ -250,7 +250,7 @@ let state = {
   loginError:'',
   rsmView:'today',       // today | yesterday | mtd
   tsmView:'daily', tsmDailyData:null, tsmMtdData:null, tsmMtdMode:'mtd', tsmOverdueMap:null, tsmSelectedTown:null,
-  investmentData:null, btsData:null, invReqList:null, invReqFilter:'',
+  investmentData:null, invReqList:null, invReqFilter:'',
   selectedTown:null,
   todayRecord:null,
   yesterdayRecord:null,
@@ -285,12 +285,7 @@ const SESSION_KEY = 'dil_portal_session_v1';
 function saveSession(){
   try{
     localStorage.setItem(SESSION_KEY, JSON.stringify({
-      user: state.user,
-      rsmView: state.rsmView,
-      selectedTown: state.selectedTown,
-      nsmView: state.nsmView,
-      nsmDate: state.nsmDate,
-      expandedRsm: state.expandedRsm
+      user: state.user
     }));
   }catch(e){ /* private browsing / storage disabled — degrade gracefully, no persistence */ }
 }
@@ -299,12 +294,10 @@ function restoreSession(){
     const raw = localStorage.getItem(SESSION_KEY);
     if(!raw) return;
     const s = JSON.parse(raw);
+    // Only the login itself is restored — which tab was active is never
+    // persisted, so a refresh or reopened tab always lands on the home
+    // screen for that role instead of resuming an old tab selection.
     if(s.user) state.user = s.user;
-    if(s.rsmView) state.rsmView = s.rsmView;
-    if(s.selectedTown) state.selectedTown = s.selectedTown;
-    if(s.nsmView) state.nsmView = s.nsmView;
-    if(s.nsmDate) state.nsmDate = s.nsmDate;
-    if(s.expandedRsm) state.expandedRsm = s.expandedRsm;
   }catch(e){ /* corrupted or unavailable session data — start fresh */ }
 }
 
@@ -748,7 +741,7 @@ function resetAllViewState(){
     nsmDailyRecords:null, nsmMtdData:null, nsmYtdData:null, nsmOverdueMap:null, overdueForDate:null,
     tsmDailyData:null, tsmMtdData:null, tsmOverdueMap:null, tsmSelectedTown:null,
     tvaRows:null, tvaSelectedTown:null,
-    investmentData:null, btsData:null, invReqList:null,
+    investmentData:null, invReqList:null,
     customerTownMapList:null, overdueUploadResult:null, overdueUploadDate:null,
     rsmView:'today', rsmMtdMode:'mtd', nsmView:'daily', tsmView:'daily', tsmMtdMode:'mtd',
     nsmDate:todayStr(), expandedRsm:null, selectedTown:null,
@@ -807,7 +800,6 @@ function renderRsmShell(){
       <button class="tab ${state.rsmView==='mtd'?'active':''}" onclick="setRsmView('mtd')">MTD Report</button>
       <button class="tab ${state.rsmView==='achievement'?'active':''}" onclick="setRsmView('achievement')">Target vs Achievement</button>
       <button class="tab ${state.rsmView==='investment'?'active':''}" onclick="setRsmView('investment')">Investment Tracker</button>
-      <button class="tab ${state.rsmView==='bts'?'active':''}" onclick="setRsmView('bts')">Balance to Ship</button>
     </div>
     <div id="rsmBody"><div class="loading">Loading…</div></div>
   </div>
@@ -818,7 +810,6 @@ function renderRsmShell(){
       <button class="bottom-nav-item ${state.rsmView==='mtd'?'active':''}" onclick="setRsmView('mtd')"><span class="ic">▤</span>MTD</button>
       <button class="bottom-nav-item ${state.rsmView==='achievement'?'active':''}" onclick="setRsmView('achievement')"><span class="ic">◈</span>T v A</button>
       <button class="bottom-nav-item ${state.rsmView==='investment'?'active':''}" onclick="setRsmView('investment')"><span class="ic">$</span>Invest.</button>
-      <button class="bottom-nav-item ${state.rsmView==='bts'?'active':''}" onclick="setRsmView('bts')"><span class="ic">▶</span>BTS</button>
     </div>
   </div>`;
 }
@@ -840,9 +831,6 @@ async function loadRsmView(){
   } else if(state.rsmView==='investment'){
     if(!state.investmentData) state.investmentData = await computeInvestmentTrackerRows(TOWN_DATA[rsmId].towns);
     body.innerHTML = renderInvestmentTracker(TOWN_DATA[rsmId].name, TOWN_DATA[rsmId].towns);
-  } else if(state.rsmView==='bts'){
-    if(!state.btsData) state.btsData = await computeBalanceToShipRollup(TOWN_DATA[rsmId].towns);
-    body.innerHTML = renderBalanceToShip(TOWN_DATA[rsmId].name);
   } else if(state.rsmView==='mtd'){
     if(!state.rsmMtdMode) state.rsmMtdMode = 'mtd';
     if(state.rsmMtdMode==='ytd'){
@@ -1377,7 +1365,6 @@ function renderTsmShell(){
       <button class="tab ${state.tsmView==='mtd'?'active':''}" onclick="setTsmView('mtd')">MTD Dashboard</button>
       <button class="tab ${state.tsmView==='achievement'?'active':''}" onclick="setTsmView('achievement')">Target vs Achievement</button>
       <button class="tab ${state.tsmView==='investment'?'active':''}" onclick="setTsmView('investment')">Investment Tracker</button>
-      <button class="tab ${state.tsmView==='bts'?'active':''}" onclick="setTsmView('bts')">Balance to Ship</button>
     </div>
     <div id="nsmBody"><div class="loading">Loading…</div></div>
   </div>
@@ -1387,7 +1374,6 @@ function renderTsmShell(){
       <button class="bottom-nav-item ${state.tsmView==='mtd'?'active':''}" onclick="setTsmView('mtd')"><span class="ic">▤</span>MTD</button>
       <button class="bottom-nav-item ${state.tsmView==='achievement'?'active':''}" onclick="setTsmView('achievement')"><span class="ic">◈</span>T v A</button>
       <button class="bottom-nav-item ${state.tsmView==='investment'?'active':''}" onclick="setTsmView('investment')"><span class="ic">$</span>Invest.</button>
-      <button class="bottom-nav-item ${state.tsmView==='bts'?'active':''}" onclick="setTsmView('bts')"><span class="ic">▶</span>BTS</button>
     </div>
   </div>`;
 }
@@ -1427,9 +1413,6 @@ async function loadTsmView(){
     } else if(state.tsmView==='investment'){
       if(!state.investmentData) state.investmentData = await computeInvestmentTrackerRows(towns);
       body.innerHTML = renderInvestmentTracker(state.user.name, towns);
-    } else if(state.tsmView==='bts'){
-      if(!state.btsData) state.btsData = await computeBalanceToShipRollup(towns);
-      body.innerHTML = renderBalanceToShip(state.user.name);
     } else {
       if(!state.tsmDailyData){
         const rsmIds = tsmScopedRsmIds();
@@ -1579,11 +1562,9 @@ function renderNsmShell(){
       <button class="tab ${state.nsmView==='mtd'?'active':''}" onclick="setNsmView('mtd')">MTD Dashboard</button>
       ${canViewTva ? `<button class="tab ${state.nsmView==='achievement'?'active':''}" onclick="setNsmView('achievement')">Target vs Achievement</button>` : ''}
       ${canViewTva ? `<button class="tab ${state.nsmView==='investment'?'active':''}" onclick="setNsmView('investment')">Investment Tracker</button>` : ''}
-      ${canViewTva ? `<button class="tab ${state.nsmView==='bts'?'active':''}" onclick="setNsmView('bts')">Balance to Ship</button>` : ''}
       ${canUploadOverdue ? `<button class="tab ${state.nsmView==='upload'?'active':''}" onclick="setNsmView('upload')">Upload Overdue</button>` : ''}
       ${canUploadTva ? `<button class="tab ${state.nsmView==='tvaupload'?'active':''}" onclick="setNsmView('tvaupload')">T v A Upload</button>` : ''}
       ${canUploadTva ? `<button class="tab ${state.nsmView==='invupload'?'active':''}" onclick="setNsmView('invupload')">Investment Upload</button>` : ''}
-      ${canUploadTva ? `<button class="tab ${state.nsmView==='btsupload'?'active':''}" onclick="setNsmView('btsupload')">Balance to Ship Upload</button>` : ''}
     </div>
     <div id="nsmBody"><div class="loading">Loading…</div></div>
   </div>
@@ -1593,7 +1574,6 @@ function renderNsmShell(){
       <button class="bottom-nav-item ${state.nsmView==='mtd'?'active':''}" onclick="setNsmView('mtd')"><span class="ic">▤</span>MTD</button>
       ${canViewTva ? `<button class="bottom-nav-item ${state.nsmView==='achievement'?'active':''}" onclick="setNsmView('achievement')"><span class="ic">◈</span>T v A</button>` : ''}
       ${canViewTva ? `<button class="bottom-nav-item ${state.nsmView==='investment'?'active':''}" onclick="setNsmView('investment')"><span class="ic">$</span>Invest.</button>` : ''}
-      ${canViewTva ? `<button class="bottom-nav-item ${state.nsmView==='bts'?'active':''}" onclick="setNsmView('bts')"><span class="ic">▶</span>BTS</button>` : ''}
       ${canUploadOverdue ? `<button class="bottom-nav-item ${state.nsmView==='upload'?'active':''}" onclick="setNsmView('upload')"><span class="ic">⬆</span>Upload</button>` : ''}
       ${canUploadTva ? `<button class="bottom-nav-item ${state.nsmView==='tvaupload'?'active':''}" onclick="setNsmView('tvaupload')"><span class="ic">⬆</span>T v A</button>` : ''}
     </div>
@@ -1655,17 +1635,8 @@ async function loadNsmView(){
     body.innerHTML = renderInvestmentTracker('All Regions', ALL_TOWNS_FLAT());
     return;
   }
-  if(state.nsmView==='bts'){
-    if(!state.btsData) state.btsData = await computeBalanceToShipRollup(ALL_TOWNS_FLAT());
-    body.innerHTML = renderBalanceToShip('All Regions');
-    return;
-  }
   if(state.nsmView==='invupload'){
     await loadInvestmentUploadView();
-    return;
-  }
-  if(state.nsmView==='btsupload'){
-    await loadBalanceToShipUploadView();
     return;
   }
   if(!state.nsmOverdueMap) state.nsmOverdueMap = await fetchOverdueMap(null);
@@ -1932,7 +1903,7 @@ function refreshCurrentViewData(){
   } else {
     state.nsmDailyRecords=null; state.nsmMtdData=null; state.nsmYtdData=null; state.nsmOverdueMap=null; state.overdueForDate=null;
   }
-  state.investmentData=null; state.btsData=null;
+  state.investmentData=null;
   render();
 }
 document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') refreshCurrentViewData(); });
@@ -3055,9 +3026,6 @@ function renderInvestmentTracker(title, towns){
   return `
   <div class="panel">
     <h3>Distributor Past Dues, Stock &amp; Receivable Details <span class="cnt">${title} · Stock/Credit as of ${asOf?prettyDate(asOf):'not uploaded yet'} · ${receivableNote}</span></h3>
-    <div class="row-flex" style="margin-bottom:10px;">
-      <button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="downloadInvestmentTrackerCsv('${escJs(title)}')">⬇ Download CSV</button>
-    </div>
     <div class="cards-row">
       <div class="stat-card"><div class="stat-label">Investment Required</div><div class="stat-value">${fmt(totReq)}</div></div>
       <div class="stat-card"><div class="stat-label">Net Investment</div><div class="stat-value">${fmt(totNet)}</div></div>
@@ -3096,21 +3064,6 @@ function renderInvestmentTracker(title, towns){
     </table>
   </div>`;
 }
-function downloadInvestmentTrackerCsv(title){
-  const {rows} = state.investmentData || {rows:[]};
-  if(!rows.length) return;
-  let csv = 'Town,Investment Required,Total Receivable at DIL,Current Distributor Stock,Stock In-Transit,Total Stock,Total Market Credit,Distributor Net Investment,Variance,Variance %\n';
-  rows.forEach(r=>{
-    csv += `"${r.town}",${r.required.toFixed(2)},${r.receivableAtDil.toFixed(2)},${r.currentStock.toFixed(2)},${r.inTransit.toFixed(2)},${r.totalStock.toFixed(2)},${r.marketCredit.toFixed(2)},${r.netInvestment.toFixed(2)},${r.variance.toFixed(2)},${r.varPct!=null?r.varPct.toFixed(1):''}\n`;
-  });
-  const blob = new Blob([csv], {type:'text/csv'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `${title.replace(/\s+/g,'_')}_investment_tracker_${todayStr()}.csv`;
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
-}
-
 /* ---- Admin: Investment Required — direct input + bulk upload ---- */
 async function loadInvestmentUploadView(){
   const body = document.getElementById('nsmBody');
@@ -3335,177 +3288,6 @@ async function handleStockCreditUpload(file){
   }
 }
 
-/* ============================================================
-   BALANCE TO SHIP
-   ============================================================ */
-async function fetchBalanceToShip(towns){
-  if(!sb) return {asOf:null, rows:[]};
-  const {data: latest, error: e1} = await sb.from('balance_to_ship').select('as_of_date').order('as_of_date', {ascending:false}).limit(1);
-  if(e1 || !latest || !latest.length) return {asOf:null, rows:[]};
-  const asOf = latest[0].as_of_date;
-  const data = await fetchAllPaged(()=> sb.from('balance_to_ship').select('*').eq('as_of_date', asOf).in('town', towns).order('id'));
-  return {asOf, rows: data};
-}
-async function computeBalanceToShipRollup(towns){
-  const [hierarchy, familyMeta, bts] = await Promise.all([
-    fetchProductHierarchyV4(), fetchFamilyMeta(), fetchBalanceToShip(towns)
-  ]);
-  const byFamily = {};
-  bts.rows.forEach(r=>{
-    const meta = hierarchy[r.sku_code];
-    const family = meta ? meta.family : null;
-    if(!family) return;
-    if(!byFamily[family]) byFamily[family] = {orderQty:0, orderValue:0, salesQty:0, salesValue:0};
-    byFamily[family].orderQty += Number(r.order_qty)||0;
-    byFamily[family].orderValue += Number(r.order_value)||0;
-    byFamily[family].salesQty += Number(r.sales_qty)||0;
-    byFamily[family].salesValue += Number(r.sales_value)||0;
-  });
-  const rows = Object.entries(byFamily).map(([family, v])=>{
-    const meta = familyMeta[family] || {};
-    return {
-      family, category: meta.category||'Uncategorized', subtotalUom: meta.subtotalUom||'pcs', conversionFactor: meta.conversionFactor,
-      orderQty: v.orderQty, orderValue: v.orderValue, salesQty: v.salesQty, salesValue: v.salesValue,
-      balanceQty: v.orderQty - v.salesQty, balanceValue: v.orderValue - v.salesValue
-    };
-  });
-  return {asOf: bts.asOf, rows};
-}
-function renderBalanceToShip(title){
-  const {asOf, rows} = state.btsData || {asOf:null, rows:[]};
-  const sorted = [...rows].sort((a,b)=>a.family.localeCompare(b.family));
-  const byCategory = {};
-  sorted.forEach(r=> (byCategory[r.category]=byCategory[r.category]||[]).push(r));
-  const categoryOrder = Object.keys(byCategory).sort((a,b)=>a.localeCompare(b));
-  let totOrderQty=0, totOrderVal=0, totSalesQty=0, totSalesVal=0, totBalQty=0, totBalVal=0;
-  sorted.forEach(r=>{ totOrderQty+=r.orderQty; totOrderVal+=r.orderValue; totSalesQty+=r.salesQty; totSalesVal+=r.salesValue; totBalQty+=r.balanceQty; totBalVal+=r.balanceValue; });
-  return `
-  <div class="panel">
-    <h3>Balance to Ship <span class="cnt">${title} · as of ${asOf?prettyDate(asOf):'not uploaded yet'}</span></h3>
-    <div class="row-flex" style="margin-bottom:10px;">
-      <button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="downloadBalanceToShipCsv('${escJs(title)}')">⬇ Download CSV</button>
-    </div>
-    <div class="cards-row">
-      <div class="stat-card"><div class="stat-label">Net Order Qty</div><div class="stat-value">${tvaFmtQty(totOrderQty)}</div></div>
-      <div class="stat-card"><div class="stat-label">Net Sales Qty</div><div class="stat-value">${tvaFmtQty(totSalesQty)}</div></div>
-      <div class="stat-card"><div class="stat-label">Balance to Ship (Qty)</div><div class="stat-value">${tvaFmtQty(totBalQty)}</div></div>
-      <div class="stat-card"><div class="stat-label">Balance to Ship (Value)</div><div class="stat-value">${tvaFmtRs(totBalVal)}</div></div>
-    </div>
-    <table class="responsive-table" style="margin-top:14px;">
-      <thead><tr>
-        <th>Product</th><th class="num">Order Qty</th><th class="num">Order Value</th>
-        <th class="num">Sales Qty</th><th class="num">Sales Value</th>
-        <th class="num">Balance Qty</th><th class="num">Balance Value</th>
-      </tr></thead>
-      <tbody>
-      ${categoryOrder.map(cat=>{
-        const famRows = byCategory[cat];
-        let cOq=0,cOv=0,cSq=0,cSv=0,cBq=0,cBv=0;
-        const familyLines = famRows.map(r=>{
-          cOq+=r.orderQty; cOv+=r.orderValue; cSq+=r.salesQty; cSv+=r.salesValue; cBq+=r.balanceQty; cBv+=r.balanceValue;
-          return `<tr>
-            <td data-label="Product">${esc(r.family)}</td>
-            <td class="num" data-label="Order Qty">${tvaFmtQty(r.orderQty)}</td>
-            <td class="num" data-label="Order Value">${tvaFmtRs(r.orderValue)}</td>
-            <td class="num" data-label="Sales Qty">${tvaFmtQty(r.salesQty)}</td>
-            <td class="num" data-label="Sales Value">${tvaFmtRs(r.salesValue)}</td>
-            <td class="num" data-label="Balance Qty">${tvaFmtQty(r.balanceQty)}</td>
-            <td class="num" data-label="Balance Value">${tvaFmtRs(r.balanceValue)}</td>
-          </tr>`;
-        }).join('');
-        return familyLines + `<tr style="background:var(--panel-alt);font-weight:700;">
-          <td data-label="Category">Total ${esc(cat)}</td>
-          <td class="num">${tvaFmtQty(cOq)}</td><td class="num">${tvaFmtRs(cOv)}</td>
-          <td class="num">${tvaFmtQty(cSq)}</td><td class="num">${tvaFmtRs(cSv)}</td>
-          <td class="num">${tvaFmtQty(cBq)}</td><td class="num">${tvaFmtRs(cBv)}</td>
-        </tr>`;
-      }).join('')}
-      </tbody>
-    </table>
-  </div>`;
-}
-function downloadBalanceToShipCsv(title){
-  const {rows} = state.btsData || {rows:[]};
-  if(!rows.length) return;
-  const sorted = [...rows].sort((a,b)=>a.family.localeCompare(b.family));
-  let csv = 'Category,Product,Order Qty,Order Value,Sales Qty,Sales Value,Balance Qty,Balance Value\n';
-  sorted.forEach(r=>{
-    csv += `"${r.category}","${r.family}",${r.orderQty.toFixed(2)},${r.orderValue.toFixed(2)},${r.salesQty.toFixed(2)},${r.salesValue.toFixed(2)},${r.balanceQty.toFixed(2)},${r.balanceValue.toFixed(2)}\n`;
-  });
-  const blob = new Blob([csv], {type:'text/csv'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `${title.replace(/\s+/g,'_')}_balance_to_ship_${todayStr()}.csv`;
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
-}
-async function loadBalanceToShipUploadView(){
-  const body = document.getElementById('nsmBody');
-  body.innerHTML = renderBalanceToShipUploadPanel();
-}
-function renderBalanceToShipUploadPanel(){
-  return `
-  <div class="panel">
-    <h3>Balance to Ship — Upload <span class="cnt">flat export: ITEM_ID, TOWN, Net Order Qty(Pcs), Net Order Value, Net Sales Qty(Pcs), Net Sales Value</span></h3>
-    <p style="font-size:12.5px;color:var(--muted);">Re-uploading replaces the entire previous snapshot — the report always shows the most recently uploaded data in full.</p>
-    <div class="row-flex" style="margin-bottom:10px;">
-      <div class="field"><label>As of Date</label><input type="date" id="btsDate" value="${todayStr()}"></div>
-    </div>
-    <input type="file" accept=".csv,.xlsx,.xls" onchange="handleBalanceToShipUpload(this.files[0])">
-    <div id="btsUploadStatus" style="margin-top:10px;"></div>
-  </div>`;
-}
-async function handleBalanceToShipUpload(file){
-  if(!file) return;
-  const asOf = document.getElementById('btsDate').value;
-  const statusEl = document.getElementById('btsUploadStatus');
-  statusEl.innerHTML = '<div class="loading">Processing…</div>';
-  try{
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, {type:'array'});
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const grid = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
-    const hdr = (grid[0]||[]).map(c=> c==null?'':String(c).trim().toLowerCase());
-    const itemCol = hdr.findIndex(c=>c==='item_id'||c==='sku code'||c==='item id');
-    const townCol = hdr.findIndex(c=>c==='town');
-    const orderQtyCol = hdr.findIndex(c=>c.includes('order') && c.includes('qty'));
-    const orderValCol = hdr.findIndex(c=>c.includes('order') && c.includes('value'));
-    const salesQtyCol = hdr.findIndex(c=>c.includes('sales') && c.includes('qty'));
-    const salesValCol = hdr.findIndex(c=>c.includes('sales') && c.includes('value'));
-    if(itemCol<0 || townCol<0){ statusEl.innerHTML = '<div class="err">Could not find ITEM_ID and TOWN columns.</div>'; return; }
-    const rowsMap = {};
-    for(let r=1; r<grid.length; r++){
-      const row = grid[r]; if(!row || row[itemCol]==null || row[townCol]==null) continue;
-      const town = tvaFindTownFromHeader(row[townCol]);
-      if(!town) continue;
-      const code = String(row[itemCol]).trim().padStart(9,'0');
-      if(!/^\d{6,}$/.test(code)) continue;
-      const key = `${town}|${code}`;
-      const oq = orderQtyCol>=0 ? (Number(row[orderQtyCol])||0) : 0;
-      const ov = orderValCol>=0 ? (Number(row[orderValCol])||0) : 0;
-      const sq = salesQtyCol>=0 ? (Number(row[salesQtyCol])||0) : 0;
-      const sv = salesValCol>=0 ? (Number(row[salesValCol])||0) : 0;
-      if(!rowsMap[key]) rowsMap[key] = {as_of_date:asOf, town, sku_code:code, order_qty:0, order_value:0, sales_qty:0, sales_value:0};
-      rowsMap[key].order_qty += oq; rowsMap[key].order_value += ov;
-      rowsMap[key].sales_qty += sq; rowsMap[key].sales_value += sv;
-    }
-    const rows = Object.values(rowsMap);
-    if(!rows.length){ statusEl.innerHTML = '<div class="err">No usable rows found.</div>'; return; }
-    await sb.from('balance_to_ship').delete().eq('as_of_date', asOf);
-    let succeeded=0; const chunkErrors=[];
-    for(let i=0;i<rows.length;i+=1000){
-      const chunk = rows.slice(i,i+1000);
-      const {error} = await sb.from('balance_to_ship').upsert(chunk, {onConflict:'as_of_date,town,sku_code'});
-      if(error){ chunkErrors.push(error.message); continue; }
-      succeeded += chunk.length;
-    }
-    if(chunkErrors.length){ statusEl.innerHTML = `<div class="err">${succeeded} of ${rows.length} rows saved. ${chunkErrors.map(esc).join('<br>')}</div>`; return; }
-    statusEl.innerHTML = `<div class="ok">Saved ${succeeded} rows for ${prettyDate(asOf)}.</div>`;
-    state.btsData = null;
-  }catch(e){
-    statusEl.innerHTML = `<div class="err">Could not process file: ${esc(e.message||String(e))}</div>`;
-  }
-}
 
 /* ============================= INIT ============================= */
 restoreSession();
