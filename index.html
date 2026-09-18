@@ -1639,7 +1639,7 @@ async function loadNsmView(gen){
   }
   if(state.nsmView==='investment'){
     if(!state.investmentData) state.investmentData = await computeInvestmentTrackerRows(ALL_TOWNS_FLAT());
-    if(gen===renderGen) body.innerHTML = renderInvestmentTracker('All Regions', ALL_TOWNS_FLAT());
+    if(gen===renderGen) body.innerHTML = renderInvestmentTracker('All Regions', ALL_TOWNS_FLAT(), true);
     return;
   }
   if(state.nsmView==='invupload'){
@@ -3024,7 +3024,69 @@ async function computeInvestmentTrackerRows(towns){
   });
   return {asOf: stockData.asOf, receivableAsOf: realReceivable.asOf, receivableIsReal: useReal, rows};
 }
-function renderInvestmentTracker(title, towns){
+function renderInvestmentRsmSummary(allRows){
+  const byTown = {};
+  allRows.forEach(r=> byTown[r.town] = r);
+  const rsmAgg = RSM_IDS.map(id=>{
+    const towns = TOWN_DATA[id].towns;
+    let req=0, rec=0, stock=0, transit=0, credit=0, net=0;
+    towns.forEach(t=>{
+      const r = byTown[t]; if(!r) return;
+      req+=r.required; rec+=r.receivableAtDil; stock+=r.currentStock; transit+=r.inTransit; credit+=r.marketCredit; net+=r.netInvestment;
+    });
+    const variance = net - req;
+    const varPct = req!==0 ? (variance/req*100) : null;
+    return {id, name:TOWN_DATA[id].name, req, rec, stock, transit, credit, net, variance, varPct};
+  });
+  return `
+  <div class="panel">
+    <h3>RSM-wise Summary <span class="cnt">tap a row to expand towns</span></h3>
+    <table class="responsive-table">
+      <thead><tr>
+        <th>RSM</th><th class="num">Investment Required</th><th class="num">Total Receivable at DIL</th>
+        <th class="num">Total Stock</th><th class="num">Total Market Credit</th><th class="num">Distributor Net Investment</th><th class="num">Var +/-</th>
+      </tr></thead>
+      <tbody>
+      ${rsmAgg.map(r=>{
+        const expandedHtml = state.expandedRsm===r.id ? renderInvestmentExpandedTowns(r.id, byTown) : '';
+        return `<tr class="clickable" onclick="toggleRsm('${r.id}')">
+          <td data-label="RSM"><b>${esc(r.name)}</b></td>
+          <td class="num" data-label="Investment Required">${fmt(r.req)}</td>
+          <td class="num" data-label="Total Receivable at DIL">${fmt(r.rec)}</td>
+          <td class="num" data-label="Total Stock">${fmt(r.stock+r.transit)}</td>
+          <td class="num" data-label="Total Market Credit">${fmt(r.credit)}</td>
+          <td class="num" data-label="Distributor Net Investment" style="background:${r.net<r.req?'#FDECEA':'#EAF6EC'};font-weight:700;">${fmt(r.net)}</td>
+          <td class="num ${r.variance>=0?'pos':'neg'}" data-label="Var +/-">${fmt(r.variance)}${r.varPct!=null?` (${r.varPct.toFixed(0)}%)`:''}</td>
+        </tr>${expandedHtml}`;
+      }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+function renderInvestmentExpandedTowns(rsmId, byTown){
+  const towns = TOWN_DATA[rsmId].towns;
+  return `<tr class="expand-row"><td colspan="7" style="padding:0;">
+    <table class="responsive-table" style="margin:4px 0 8px;">
+      <thead><tr><th style="padding-left:26px;">Town</th><th class="num">Investment Required</th><th class="num">Total Receivable at DIL</th><th class="num">Total Stock</th><th class="num">Total Market Credit</th><th class="num">Distributor Net Investment</th><th class="num">Var +/-</th></tr></thead>
+      <tbody>
+      ${towns.map(t=>{
+        const r = byTown[t];
+        if(!r) return `<tr><td data-label="Town" style="padding-left:26px;color:var(--muted);">${esc(t)}</td><td colspan="6" style="color:var(--muted);">No data</td></tr>`;
+        return `<tr>
+          <td data-label="Town" style="padding-left:26px;color:var(--muted);">${esc(t)}</td>
+          <td class="num" data-label="Investment Required">${fmt(r.required)}</td>
+          <td class="num" data-label="Total Receivable at DIL">${fmt(r.receivableAtDil)}</td>
+          <td class="num" data-label="Total Stock">${fmt(r.totalStock)}</td>
+          <td class="num" data-label="Total Market Credit">${fmt(r.marketCredit)}</td>
+          <td class="num" data-label="Distributor Net Investment">${fmt(r.netInvestment)}</td>
+          <td class="num ${r.variance>=0?'pos':'neg'}" data-label="Var +/-">${fmt(r.variance)}${r.varPct!=null?` (${r.varPct.toFixed(0)}%)`:''}</td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table>
+  </td></tr>`;
+}
+function renderInvestmentTracker(title, towns, groupByRsm){
   const {asOf, receivableAsOf, receivableIsReal, rows} = state.investmentData || {asOf:null, receivableAsOf:null, receivableIsReal:false, rows:[]};
   let totReq=0, totRec=0, totStock=0, totTransit=0, totMktCredit=0, totNet=0;
   rows.forEach(r=>{ totReq+=r.required; totRec+=r.receivableAtDil; totStock+=r.currentStock; totTransit+=r.inTransit; totMktCredit+=r.marketCredit; totNet+=r.netInvestment; });
@@ -3033,6 +3095,7 @@ function renderInvestmentTracker(title, towns){
   const receivableNote = receivableIsReal
     ? `Receivable as of ${prettyDate(receivableAsOf)} (actual)`
     : `Receivable estimated from aging buckets — upload the actual Past Due Report for real figures`;
+  const rsmSummaryHtml = groupByRsm ? renderInvestmentRsmSummary(rows) : '';
   return `
   <div class="panel">
     <h3>Distributor Past Dues, Stock &amp; Receivable Details <span class="cnt">${title} · Stock/Credit as of ${asOf?prettyDate(asOf):'not uploaded yet'} · ${receivableNote}</span></h3>
@@ -3041,6 +3104,10 @@ function renderInvestmentTracker(title, towns){
       <div class="stat-card"><div class="stat-label">Net Investment</div><div class="stat-value">${fmt(totNet)}</div></div>
       <div class="stat-card"><div class="stat-label">Variance</div><div class="stat-value ${totVariance>=0?'pos':'neg'}">${fmt(totVariance)}${totVarPct!=null?` (${totVarPct.toFixed(0)}%)`:''}</div></div>
     </div>
+  </div>
+  ${rsmSummaryHtml}
+  <div class="panel">
+    <h3>${groupByRsm ? 'Town-wise Detail' : 'Town-wise'}</h3>
     <table class="responsive-table" style="margin-top:14px;">
       <thead><tr>
         <th>Town</th><th class="num">Investment Required</th><th class="num">Total Receivable at DIL</th>
@@ -3068,6 +3135,7 @@ function renderInvestmentTracker(title, towns){
         <td class="num">${fmt(totTransit)}</td>
         <td class="num">${fmt(totStock+totTransit)}</td>
         <td class="num">${fmt(totMktCredit)}</td>
+
         <td class="num">${fmt(totNet)}</td>
         <td class="num ${totVariance>=0?'pos':'neg'}">${fmt(totVariance)}${totVarPct!=null?` (${totVarPct.toFixed(0)}%)`:''}</td>
       </tr></tfoot>
