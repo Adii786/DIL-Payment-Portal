@@ -16,7 +16,6 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth/mammoth.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <style>
   :root{
     --navy:#151515;
@@ -2799,6 +2798,7 @@ const TVA_TOWN_ALIASES = {
   'muzaffarbad': 'Muzaffarabad',
   'pakpatan': 'Pak Pattan',
   'takht-i-bhai': 'Takht Bahi',
+  'pir mahal': 'Pirmahal',
 };
 // Simple plain-name normalizer (no "code-Town(Region)" prefix to strip) —
 // used by the investment/balance uploaders, which give plain town names.
@@ -3119,12 +3119,12 @@ function renderInvestmentUploadPanel(){
     <div id="stockCreditUploadStatus" style="margin-top:10px;"></div>
   </div>
   <div class="panel">
-    <h3>Daily Upload — Total Receivable at DIL <span class="cnt">from the Past Due Invoice Report (.docx), town-wise via your customer→town mapping</span></h3>
-    <p style="font-size:12.5px;color:var(--muted);">Reads every "Total For Customer" line, sums Balance Due per customer, then maps each customer to its town using the same mapping used for Daily Plan entry. Any customer without a mapping is listed below so you can add it — those amounts are excluded from the total until mapped.</p>
+    <h3>Daily Upload — Total Receivable at DIL <span class="cnt">Excel/CSV: Town given directly, one row per distributor</span></h3>
+    <p style="font-size:12.5px;color:var(--muted);">Sums the Total Receivable amount per town directly from the Town column — no customer mapping needed. Any row with a town not in your defined list is listed below so you can check it; that amount is excluded from the total until resolved.</p>
     <div class="row-flex" style="margin-bottom:10px;">
       <div class="field"><label>As of Date</label><input type="date" id="receivableDate" value="${todayStr()}"></div>
     </div>
-    <input type="file" accept=".docx" onchange="handleReceivableUpload(this.files[0])">
+    <input type="file" accept=".csv,.xlsx,.xls" onchange="handleReceivableUpload(this.files[0])">
     <div id="receivableUploadStatus" style="margin-top:10px;"></div>
   </div>`;
 }
@@ -3161,68 +3161,48 @@ async function handleInvestmentRequiredUpload(file){
     statusEl.innerHTML = `<div class="err">Could not process file: ${esc(e.message||String(e))}</div>`;
   }
 }
-/* ---- Total Receivable at DIL: parses the "Total For Customer" lines directly
-   from the docx's raw word/document.xml, rather than trusting a text-conversion
-   library — the ERP-exported report uses fixed-width Courier text with tab
-   stops (not a real Word table), and generic docx-to-text conversion has been
-   observed to lose numbers on long lines. Regex on the raw XML avoids that. ---- */
-async function parseTotalReceivableDocx(file){
-  const buf = await file.arrayBuffer();
-  const zip = await JSZip.loadAsync(buf);
-  const xmlFile = zip.file('word/document.xml');
-  if(!xmlFile) throw new Error('Could not find word/document.xml inside this file — is it a valid .docx?');
-  const xml = await xmlFile.async('string');
-  // one paragraph = one <w:p ...>...</w:p>; concatenate all <w:t> runs within it
-  const paraRegex = /<w:p [^>]*>[\s\S]*?<\/w:p>/g;
-  const textRegex = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g;
-  const paras = xml.match(paraRegex) || [];
-  const lines = [];
-  for(const p of paras){
-    let m, line='';
-    textRegex.lastIndex = 0;
-    while((m = textRegex.exec(p))) line += m[1];
-    if(line.trim()) lines.push(line);
-  }
-  const totalLineRegex = /Total For Customer:\s*(.+?)\s{2,}([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s*$/;
-  const customers = [];
-  for(const l of lines){
-    if(!l.includes('Total For Customer')) continue;
-    const m = totalLineRegex.exec(l.trim());
-    if(m){
-      customers.push({name: m[1].trim(), balanceDue: Number(m[4].replace(/,/g,''))});
-    }
-  }
-  return customers;
-}
+/* ---- Total Receivable at DIL: Town is given directly in this format, so
+   no customer→town mapping step is needed — just find the header row,
+   read Town and the amount column, and sum per town. ---- */
 async function handleReceivableUpload(file){
   if(!file) return;
   const asOf = document.getElementById('receivableDate').value;
   const statusEl = document.getElementById('receivableUploadStatus');
   statusEl.innerHTML = '<div class="loading">Processing…</div>';
   try{
-    const customers = await parseTotalReceivableDocx(file);
-    if(!customers.length){ statusEl.innerHTML = '<div class="err">No "Total For Customer" lines found — is this the right report?</div>'; return; }
-    const custMap = await fetchCustomerTownMap();
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, {type:'array'});
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const grid = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    let headerRow=-1;
+    for(let r=0;r<Math.min(grid.length,10);r++){
+      const rowLower = (grid[r]||[]).map(c=> c==null?'':String(c).trim().toLowerCase());
+      if(rowLower.some(c=>c==='town') && rowLower.some(c=>c.includes('receivable'))){ headerRow=r; break; }
+    }
+    if(headerRow<0){ statusEl.innerHTML = '<div class="err">Could not find a header row with "Town" and "Total Receivable" columns.</div>'; return; }
+    const hdr = (grid[headerRow]||[]).map(c=> c==null?'':String(c).trim().toLowerCase());
+    const townCol = hdr.findIndex(c=>c==='town');
+    const amountCol = hdr.findIndex(c=>c.includes('receivable'));
     const byTown = {};
     const unmatched = [];
-    let matchedTotal = 0, unmatchedTotal = 0;
-    customers.forEach(c=>{
-      const hit = custMap[c.name];
-      if(hit && hit.town){
-        byTown[hit.town] = (byTown[hit.town]||0) + c.balanceDue;
-        matchedTotal += c.balanceDue;
-      } else {
-        unmatched.push(c);
-        unmatchedTotal += c.balanceDue;
-      }
-    });
+    let total = 0, unmatchedTotal = 0;
+    for(let r=headerRow+1; r<grid.length; r++){
+      const row = grid[r]; if(!row || row[townCol]==null || row[amountCol]==null) continue;
+      const amount = Number(row[amountCol]);
+      if(isNaN(amount)) continue;
+      total += amount;
+      const town = tvaNormalizeTownPlain(row[townCol]);
+      if(!town){ unmatched.push({town: row[townCol], amount}); unmatchedTotal += amount; continue; }
+      byTown[town] = (byTown[town]||0) + amount;
+    }
     const rows = Object.entries(byTown).map(([town,amount])=>({as_of_date:asOf, town, amount}));
+    if(!rows.length){ statusEl.innerHTML = '<div class="err">No usable rows found.</div>'; return; }
     await sb.from('receivable_at_dil').delete().eq('as_of_date', asOf);
     const {error} = await sb.from('receivable_at_dil').upsert(rows, {onConflict:'as_of_date,town'});
     if(error){ statusEl.innerHTML = `<div class="err">${esc(error.message)}</div>`; return; }
-    let html = `<div class="ok">Saved ${rows.length} towns for ${prettyDate(asOf)} — ${customers.length} customers read, ${customers.length-unmatched.length} mapped to a town (Rs ${Math.round(matchedTotal).toLocaleString()}).</div>`;
+    let html = `<div class="ok">Saved ${rows.length} towns for ${prettyDate(asOf)} — total Rs ${Math.round(total).toLocaleString()}.</div>`;
     if(unmatched.length){
-      html += `<div class="err" style="margin-top:10px;">${unmatched.length} customer(s) have no town mapping (Rs ${Math.round(unmatchedTotal).toLocaleString()} excluded from the total until mapped) — add them via the customer-town mapping used on Daily Plan entry:<br>${unmatched.map(c=>`${esc(c.name)} — Rs ${Math.round(c.balanceDue).toLocaleString()}`).join('<br>')}</div>`;
+      html += `<div class="err" style="margin-top:10px;">${unmatched.length} row(s) had a town not in your defined list (Rs ${Math.round(unmatchedTotal).toLocaleString()} excluded from the total):<br>${unmatched.map(u=>`${esc(String(u.town))} — Rs ${Math.round(u.amount).toLocaleString()}`).join('<br>')}</div>`;
     }
     statusEl.innerHTML = html;
     state.investmentData = null;
